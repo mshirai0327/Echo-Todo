@@ -2,6 +2,7 @@ import {
   initDB,
   getAllTasks,
   addTask,
+  updateTask,
   closeTask,
   getSettings,
   saveSettings,
@@ -66,7 +67,47 @@ function createTaskElement(task: Task): HTMLElement {
     handleCloseTask(task, item)
   })
 
+  textEl.addEventListener('click', () => {
+    startEditingTask(task, textEl)
+  })
+
   return item
+}
+
+function startEditingTask(task: Task, textEl: HTMLElement): void {
+  if (textEl.querySelector('input')) return // すでに編集中
+
+  const original = task.text
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'task-edit-input'
+  input.value = original
+
+  textEl.textContent = ''
+  textEl.appendChild(input)
+  input.focus()
+  input.select()
+
+  const commit = async () => {
+    const newText = input.value.trim()
+    if (newText && newText !== original) {
+      task.text = newText
+      await updateTask(task)
+    }
+    textEl.textContent = task.text
+  }
+
+  const cancel = () => {
+    task.text = original
+    textEl.textContent = original
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit() }
+    if (e.key === 'Escape') { e.preventDefault(); cancel() }
+  })
+
+  input.addEventListener('blur', commit)
 }
 
 async function handleCloseTask(task: Task, element: HTMLElement): Promise<void> {

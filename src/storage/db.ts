@@ -90,6 +90,17 @@ export async function addTask(task: Task): Promise<void> {
   })
 }
 
+export async function updateTask(task: Task): Promise<void> {
+  const db = await getDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('tasks', 'readwrite')
+    const store = tx.objectStore('tasks')
+    const request = store.put(task)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}
+
 export async function deleteTask(id: string): Promise<void> {
   const db = await getDB()
   return new Promise((resolve, reject) => {

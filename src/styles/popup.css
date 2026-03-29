@@ -205,7 +205,27 @@ body {
   font-size: 13px;
   line-height: 1.6;
   word-break: break-word;
-  padding-top: 2px;
+  padding: 2px 4px;
+  cursor: text;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.task-text:hover {
+  background: var(--color-bg);
+}
+
+.task-edit-input {
+  width: 100%;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.6;
+  border: none;
+  border-bottom: 2px solid var(--color-primary);
+  background: transparent;
+  outline: none;
+  padding: 0;
+  color: inherit;
 }
 
 /* タスク完了アニメーション */
