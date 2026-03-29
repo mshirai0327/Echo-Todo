@@ -1,43 +1,76 @@
-declare const chrome: {
-  runtime: {
-    sendMessage(msg: Record<string, unknown>): void
-    onMessage: {
-      addListener(cb: (msg: Record<string, unknown>) => void): void
-      removeListener(cb: (msg: Record<string, unknown>) => void): void
-    }
+declare global {
+  interface SpeechRecognitionEvent extends Event {
+    results: SpeechRecognitionResultList
+  }
+
+  interface SpeechRecognitionErrorEvent extends Event {
+    error: string
+  }
+
+  interface SpeechRecognition extends EventTarget {
+    lang: string
+    continuous: boolean
+    interimResults: boolean
+    onresult: ((event: SpeechRecognitionEvent) => void) | null
+    onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
+    onend: (() => void) | null
+    start(): void
+    stop(): void
+  }
+
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognition
+    webkitSpeechRecognition?: new () => SpeechRecognition
   }
 }
 
 export class VoiceRecorder {
-  private listener: ((msg: Record<string, unknown>) => void) | null = null
+  private recognition: SpeechRecognition | null = null
 
   isSupported(): boolean {
-    return typeof chrome !== 'undefined' && !!chrome.runtime
+    return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
   }
 
-  start(onResult: (text: string) => void, onError: (err: string) => void): void {
-    this.listener = (msg: Record<string, unknown>) => {
-      if (msg.action === 'voice_result' && typeof msg.text === 'string') {
-        onResult(msg.text)
-        this.cleanup()
-      } else if (msg.action === 'voice_error' && typeof msg.error === 'string') {
-        onError(`音声認識エラー: ${msg.error}`)
-        this.cleanup()
-      }
+  start(onResult: (text: string) => void, onError: (error: string) => void): void {
+    const Impl = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!Impl) {
+      onError('not-supported')
+      return
     }
-    chrome.runtime.onMessage.addListener(this.listener)
-    chrome.runtime.sendMessage({ action: 'voice_start' })
+
+    this.recognition = new Impl()
+    this.recognition.lang = 'ja-JP'
+    this.recognition.continuous = false
+    this.recognition.interimResults = false
+
+    this.recognition.onresult = (event) => {
+      const text = event.results[0]?.[0]?.transcript ?? ''
+      this.cleanup()
+      onResult(text)
+    }
+
+    this.recognition.onerror = (event) => {
+      this.cleanup()
+      onError(event.error)
+    }
+
+    this.recognition.onend = () => {
+      this.cleanup()
+    }
+
+    this.recognition.start()
   }
 
   stop(): void {
-    chrome.runtime.sendMessage({ action: 'voice_stop' })
+    this.recognition?.stop()
     this.cleanup()
   }
 
   private cleanup(): void {
-    if (this.listener) {
-      chrome.runtime.onMessage.removeListener(this.listener)
-      this.listener = null
-    }
+    if (!this.recognition) return
+    this.recognition.onresult = null
+    this.recognition.onerror = null
+    this.recognition.onend = null
+    this.recognition = null
   }
 }

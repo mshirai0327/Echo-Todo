@@ -1,15 +1,15 @@
 import {
-  initDB,
-  getAllTasks,
   addTask,
-  updateTask,
   closeTask,
+  getAllTasks,
   getSettings,
-  saveSettings,
   getStats,
+  initDB,
+  saveSettings,
   saveStats,
   type Task,
   type Settings,
+  updateTask,
 } from '../storage/db'
 import { extractTasks } from '../llm/llm'
 import { VoiceRecorder } from '../voice/voice'
@@ -42,6 +42,20 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'info')
     toast.classList.add('removing')
     toast.addEventListener('animationend', () => toast.remove())
   }, 2500)
+}
+
+function activateTab(tabId: 'main' | 'stats' | 'settings'): void {
+  const tabBtns = document.querySelectorAll('.tab-btn')
+  tabBtns.forEach((btn) => {
+    btn.classList.toggle('active', (btn as HTMLElement).dataset.tab === tabId)
+  })
+
+  document.querySelectorAll('.tab-content').forEach((content) => {
+    content.classList.remove('active')
+  })
+
+  const target = document.getElementById(`tab-${tabId}`)
+  if (target) target.classList.add('active')
 }
 
 // ====== タスクUI ======
@@ -169,12 +183,21 @@ async function addTasksFromText(text: string): Promise<void> {
   if (!trimmed) return
 
   const statusEl = document.getElementById('voice-status')
-  if (statusEl) {
-    statusEl.innerHTML = '<div class="processing-indicator"><div class="spinner"></div> AI処理中...</div>'
-  }
 
   try {
     const settings = await getSettings()
+    if (statusEl) {
+      const processingLabel =
+        settings.llmMode === 'input'
+          ? 'タスクを追加中...'
+          : settings.llmMode === 'nano'
+          ? 'Gemini Nano で整理中...'
+          : settings.llmMode === 'gemini'
+            ? 'Gemini API で整理中...'
+            : 'タスクを整理中...'
+      statusEl.innerHTML = `<div class="processing-indicator"><div class="spinner"></div> ${processingLabel}</div>`
+    }
+
     const taskTexts = await extractTasks(trimmed, settings)
 
     const now = Date.now()
@@ -191,9 +214,8 @@ async function addTasksFromText(text: string): Promise<void> {
       await addTask(task)
     }
 
-    // 統計の totalCreated を更新
     const stats = await getStats()
-    stats.totalCreated += taskTexts.filter((t) => t.trim()).length
+    stats.totalCreated += taskTexts.filter((task) => task.trim()).length
     await saveStats(stats)
 
     await renderTasks()
@@ -238,18 +260,27 @@ function startRecording(): void {
   if (statusEl) statusEl.textContent = '🔴 録音中... 話しかけてください'
 
   voiceRecorder.start(
-    async (text: string) => {
+    async (text) => {
       setRecordingState(false)
       if (statusEl) statusEl.textContent = `認識: "${text}"`
       await addTasksFromText(text)
     },
-    (err: string) => {
+    (error) => {
       setRecordingState(false)
       if (statusEl) statusEl.textContent = ''
-      const msg = err.includes('http-tab-required')
-        ? '音声入力はウェブページを開いた状態で使用してください 🌐'
-        : err
-      showToast(msg, 'error')
+
+      const message =
+        error === 'not-allowed' || error === 'service-not-allowed'
+          ? 'マイクの許可が必要です'
+          : error === 'no-speech'
+            ? '声をうまく認識できませんでした'
+            : error === 'audio-capture'
+              ? 'マイク入力を取得できませんでした'
+              : error === 'not-supported'
+                ? '音声入力はこのブラウザでサポートされていません'
+                : `音声入力エラー: ${error}`
+
+      showToast(message, 'error')
     },
   )
 }
@@ -330,17 +361,13 @@ async function renderSettings(): Promise<void> {
 
   if (ttlInput) ttlInput.value = String(settings.ttlHours)
   if (llmMode) llmMode.value = settings.llmMode
-  if (apiKeyInput && settings.apiKey) apiKeyInput.value = settings.apiKey
-
+  if (apiKeyInput) apiKeyInput.value = settings.apiKey ?? ''
   updateApiKeyVisibility(settings.llmMode, apiKeyGroup)
 }
 
-function updateApiKeyVisibility(
-  mode: Settings['llmMode'],
-  apiKeyGroup: HTMLElement | null,
-): void {
+function updateApiKeyVisibility(mode: Settings['llmMode'], apiKeyGroup: HTMLElement | null): void {
   if (!apiKeyGroup) return
-  if (mode === 'gemini' || mode === 'openai') {
+  if (mode === 'nano' || mode === 'gemini') {
     apiKeyGroup.classList.add('visible')
   } else {
     apiKeyGroup.classList.remove('visible')
@@ -365,7 +392,7 @@ function setupSettings(): void {
       const apiKeyInput = document.getElementById('api-key-input') as HTMLInputElement | null
 
       const ttlHours = ttlInput ? parseInt(ttlInput.value, 10) : 72
-      const mode = (llmModeEl?.value ?? 'nano') as Settings['llmMode']
+      const llmMode = (llmModeEl?.value ?? 'input') as Settings['llmMode']
       const apiKey = apiKeyInput?.value.trim() || undefined
 
       if (isNaN(ttlHours) || ttlHours < 1) {
@@ -375,7 +402,7 @@ function setupSettings(): void {
 
       const settings: Settings = {
         ttlHours,
-        llmMode: mode,
+        llmMode,
         apiKey,
       }
 
@@ -395,16 +422,7 @@ function setupTabs(): void {
       const tabId = (btn as HTMLElement).dataset.tab
       if (!tabId) return
 
-      // アクティブタブ切り替え
-      tabBtns.forEach((b) => b.classList.remove('active'))
-      btn.classList.add('active')
-
-      document.querySelectorAll('.tab-content').forEach((content) => {
-        content.classList.remove('active')
-      })
-
-      const target = document.getElementById(`tab-${tabId}`)
-      if (target) target.classList.add('active')
+      activateTab(tabId as 'main' | 'stats' | 'settings')
 
       // 各タブのデータ更新
       if (tabId === 'main') {

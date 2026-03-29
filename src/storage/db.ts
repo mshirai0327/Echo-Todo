@@ -7,8 +7,7 @@ export interface Task {
 
 export interface Settings {
   ttlHours: number
-  llmMode: 'nano' | 'openai' | 'gemini'
-  apiProvider?: 'openai' | 'gemini'
+  llmMode: 'input' | 'nano' | 'gemini'
   apiKey?: string
 }
 
@@ -23,7 +22,10 @@ export interface Stats {
 const DB_NAME = 'echo-todo-db'
 const DB_VERSION = 1
 
-const defaultSettings: Settings = { ttlHours: 72, llmMode: 'nano' }
+const defaultSettings: Settings = {
+  ttlHours: 72,
+  llmMode: 'input',
+}
 const defaultStats: Stats = {
   totalCreated: 0,
   totalExpired: 0,
@@ -33,6 +35,44 @@ const defaultStats: Stats = {
 }
 
 let dbInstance: IDBDatabase | null = null
+
+type StoredSettings = {
+  ttlHours?: number
+  apiKey?: string
+  llmMode?: 'input' | 'nano' | 'gemini' | 'openai'
+  apiProvider?: 'gemini' | 'openai'
+  taskSplitMode?: 'none' | 'nano' | 'api'
+  processingMode?: 'input' | 'nano' | 'gemini'
+}
+
+function normalizeSettings(value?: StoredSettings): Settings {
+  const explicitMode = value?.llmMode
+  const inferredMode: Settings['llmMode'] =
+    explicitMode === 'openai'
+      ? 'gemini'
+      : explicitMode
+        ?? (value?.processingMode === 'input'
+      ? 'input'
+      : value?.apiProvider === 'openai'
+          ? 'gemini'
+          : value?.processingMode === 'gemini'
+            ? 'gemini'
+            : value?.processingMode === 'nano'
+              ? 'nano'
+              : value?.taskSplitMode === 'none'
+                ? 'input'
+                : value?.taskSplitMode === 'api'
+                  ? 'gemini'
+                  : value?.taskSplitMode === 'nano'
+                    ? 'nano'
+                    : defaultSettings.llmMode)
+
+  return {
+    ttlHours: value?.ttlHours ?? defaultSettings.ttlHours,
+    llmMode: inferredMode,
+    apiKey: value?.apiKey?.trim() || undefined,
+  }
+}
 
 export function initDB(): Promise<IDBDatabase> {
   if (dbInstance) return Promise.resolve(dbInstance)
@@ -137,8 +177,13 @@ export async function getSettings(): Promise<Settings> {
     const store = tx.objectStore('settings')
     const request = store.get('settings')
     request.onsuccess = () => {
-      const record = request.result as { key: string; value: Settings } | undefined
-      resolve(record ? record.value : { ...defaultSettings })
+      const record = request.result as
+        | {
+          key: string
+          value: StoredSettings
+        }
+        | undefined
+      resolve(normalizeSettings(record?.value))
     }
     request.onerror = () => reject(request.error)
   })
@@ -149,7 +194,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('settings', 'readwrite')
     const store = tx.objectStore('settings')
-    const request = store.put({ key: 'settings', value: settings })
+    const request = store.put({ key: 'settings', value: normalizeSettings(settings) })
     request.onsuccess = () => resolve()
     request.onerror = () => reject(request.error)
   })

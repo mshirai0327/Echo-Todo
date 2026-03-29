@@ -525,10 +525,6 @@ body {
 
 /* ====== API設定エリア ====== */
 #api-key-group {
-  display: none;
-}
-
-#api-key-group.visible {
   display: block;
 }
 
