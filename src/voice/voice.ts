@@ -1,82 +1,43 @@
-// Web Speech API - lib.domに含まれていない型を補完
-declare global {
-  interface SpeechRecognitionEvent extends Event {
-    results: SpeechRecognitionResultList
-  }
-
-  interface SpeechRecognitionErrorEvent extends Event {
-    readonly error: string
-    readonly message: string
-  }
-
-  interface SpeechRecognition extends EventTarget {
-    lang: string
-    continuous: boolean
-    interimResults: boolean
-    maxAlternatives: number
-    onresult: ((event: SpeechRecognitionEvent) => void) | null
-    onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
-    onend: (() => void) | null
-    start(): void
-    stop(): void
-    abort(): void
-  }
-
-  interface SpeechRecognitionConstructor {
-    new (): SpeechRecognition
-  }
-
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionConstructor
-    webkitSpeechRecognition?: SpeechRecognitionConstructor
+declare const chrome: {
+  runtime: {
+    sendMessage(msg: Record<string, unknown>): void
+    onMessage: {
+      addListener(cb: (msg: Record<string, unknown>) => void): void
+      removeListener(cb: (msg: Record<string, unknown>) => void): void
+    }
   }
 }
 
 export class VoiceRecorder {
-  private recognition: SpeechRecognition | null = null
+  private listener: ((msg: Record<string, unknown>) => void) | null = null
 
   isSupported(): boolean {
-    return 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window
+    return typeof chrome !== 'undefined' && !!chrome.runtime
   }
 
   start(onResult: (text: string) => void, onError: (err: string) => void): void {
-    if (!this.isSupported()) {
-      onError('Web Speech API はこのブラウザでサポートされていません')
-      return
+    this.listener = (msg: Record<string, unknown>) => {
+      if (msg.action === 'voice_result' && typeof msg.text === 'string') {
+        onResult(msg.text)
+        this.cleanup()
+      } else if (msg.action === 'voice_error' && typeof msg.error === 'string') {
+        onError(`音声認識エラー: ${msg.error}`)
+        this.cleanup()
+      }
     }
-
-    const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition
-
-    if (!SpeechRecognitionImpl) {
-      onError('SpeechRecognition の初期化に失敗しました')
-      return
-    }
-
-    this.recognition = new SpeechRecognitionImpl()
-    this.recognition.lang = 'ja-JP'
-    this.recognition.continuous = false
-    this.recognition.interimResults = false
-
-    this.recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const transcript = event.results[0][0].transcript
-      onResult(transcript)
-    }
-
-    this.recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      onError(`音声認識エラー: ${event.error}`)
-    }
-
-    this.recognition.onend = () => {
-      this.recognition = null
-    }
-
-    this.recognition.start()
+    chrome.runtime.onMessage.addListener(this.listener)
+    chrome.runtime.sendMessage({ action: 'voice_start' })
   }
 
   stop(): void {
-    if (this.recognition) {
-      this.recognition.stop()
-      this.recognition = null
+    chrome.runtime.sendMessage({ action: 'voice_stop' })
+    this.cleanup()
+  }
+
+  private cleanup(): void {
+    if (this.listener) {
+      chrome.runtime.onMessage.removeListener(this.listener)
+      this.listener = null
     }
   }
 }

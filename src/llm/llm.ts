@@ -21,6 +21,27 @@ const SYSTEM_PROMPT = `あなたはTodo管理アシスタントです。
 出力形式: ["タスク1", "タスク2", ...]
 JSON配列のみを返し、他の文章は含めないでください。`
 
+// 接続表現で区切るルールベース分割（APIキー不要・無料）
+const SPLIT_CONJUNCTIONS = [
+  'それと', 'それから', 'あとは', 'あと', 'そして', 'ついでに',
+  'それに', 'また', 'さらに', 'あわせて', 'あともう一つ', 'もう一つ',
+]
+
+export function splitByRules(text: string): string[] {
+  // 句読点と接続表現を区切り文字として扱う正規表現を構築
+  const conjPattern = SPLIT_CONJUNCTIONS.map((c) =>
+    c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  ).join('|')
+  const pattern = new RegExp(`[。\\.\\n]|、?(?=${conjPattern})`, 'g')
+
+  const parts = text
+    .split(pattern)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+
+  return parts.length > 0 ? parts : [text.trim()]
+}
+
 function parseTaskArray(response: string): string[] | null {
   const match = response.match(/\[[\s\S]*\]/)
   if (!match) return null
@@ -121,32 +142,45 @@ export async function extractTasks(speech: string, settings: Settings): Promise<
     try {
       return await extractTasksWithNano(speech)
     } catch (e) {
-      console.warn('Gemini Nano failed, trying fallback:', e)
+      console.info('Gemini Nano unavailable, trying fallback:', e)
     }
-  }
 
-  // gemini モード or nano フォールバック
-  if (mode === 'gemini' || mode === 'nano') {
+    // Nano フォールバック: apiProvider に応じて外部API を試みる
     if (settings.apiKey) {
-      try {
-        return await extractTasksWithGeminiAPI(speech, settings.apiKey)
-      } catch (e) {
-        console.warn('Gemini API failed:', e)
+      if (settings.apiProvider === 'gemini') {
+        try {
+          return await extractTasksWithGeminiAPI(speech, settings.apiKey)
+        } catch (e) {
+          console.warn('Gemini API failed:', e)
+        }
+      } else if (settings.apiProvider === 'openai') {
+        try {
+          return await extractTasksWithOpenAI(speech, settings.apiKey)
+        } catch (e) {
+          console.warn('OpenAI API failed:', e)
+        }
       }
     }
   }
 
-  // openai モード or フォールバック
-  if (mode === 'openai') {
-    if (settings.apiKey) {
-      try {
-        return await extractTasksWithOpenAI(speech, settings.apiKey)
-      } catch (e) {
-        console.warn('OpenAI API failed:', e)
-      }
+  // gemini モード
+  if (mode === 'gemini' && settings.apiKey) {
+    try {
+      return await extractTasksWithGeminiAPI(speech, settings.apiKey)
+    } catch (e) {
+      console.warn('Gemini API failed:', e)
     }
   }
 
-  // 全てのLLMが失敗した場合はテキストをそのまま1件として登録
-  return [speech]
+  // openai モード
+  if (mode === 'openai' && settings.apiKey) {
+    try {
+      return await extractTasksWithOpenAI(speech, settings.apiKey)
+    } catch (e) {
+      console.warn('OpenAI API failed:', e)
+    }
+  }
+
+  // ルールベース分割（APIキー不要・無料フォールバック）
+  return splitByRules(speech)
 }

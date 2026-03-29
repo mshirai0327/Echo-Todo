@@ -205,7 +205,10 @@ function startRecording(): void {
     (err: string) => {
       setRecordingState(false)
       if (statusEl) statusEl.textContent = ''
-      showToast(err, 'error')
+      const msg = err.includes('http-tab-required')
+        ? '音声入力はウェブページを開いた状態で使用してください 🌐'
+        : err
+      showToast(msg, 'error')
     },
   )
 }

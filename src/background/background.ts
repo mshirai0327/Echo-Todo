@@ -1,15 +1,19 @@
 // Chrome Extension API型定義
 declare const chrome: {
   runtime: {
-    onInstalled: {
-      addListener(callback: () => void): void
-    }
+    onInstalled: { addListener(callback: () => void): void }
+    onMessage: { addListener(callback: (msg: Record<string, unknown>) => void): void }
+    sendMessage(msg: Record<string, unknown>): void
   }
   alarms: {
     create(name: string, alarmInfo: { periodInMinutes: number }): void
-    onAlarm: {
-      addListener(callback: (alarm: { name: string }) => void): void
-    }
+    onAlarm: { addListener(callback: (alarm: { name: string }) => void): void }
+  }
+  tabs: {
+    query(queryInfo: { active: boolean; currentWindow: boolean }): Promise<Array<{ id?: number; url?: string }>>
+  }
+  scripting: {
+    executeScript(injection: { target: { tabId: number }; func: () => void }): Promise<void>
   }
 }
 
@@ -133,7 +137,69 @@ async function performTTLCheck(): Promise<void> {
   }
 }
 
-// インストール時にアラームを設定
+// ====== 音声入力: アクティブタブにスクリプト注入 ======
+
+async function startVoiceInTab(): Promise<void> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tab = tabs[0]
+
+  if (!tab?.id || !tab.url?.match(/^https?:\/\//)) {
+    chrome.runtime.sendMessage({ action: 'voice_error', error: 'http-tab-required' })
+    return
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => {
+      const existing = (window as Record<string, unknown>).__echoTodoRec as SpeechRecognition | undefined
+      if (existing) { existing.stop() }
+
+      const Impl = (window as Record<string, unknown>).SpeechRecognition as (new () => SpeechRecognition) | undefined
+        ?? (window as Record<string, unknown>).webkitSpeechRecognition as (new () => SpeechRecognition) | undefined
+      if (!Impl) {
+        chrome.runtime.sendMessage({ action: 'voice_error', error: 'not-supported' })
+        return
+      }
+
+      const rec = new Impl()
+      ;(window as Record<string, unknown>).__echoTodoRec = rec
+      rec.lang = 'ja-JP'
+      rec.continuous = false
+      rec.interimResults = false
+
+      rec.onresult = (e: SpeechRecognitionEvent) => {
+        chrome.runtime.sendMessage({ action: 'voice_result', text: e.results[0][0].transcript })
+        delete (window as Record<string, unknown>).__echoTodoRec
+      }
+      rec.onerror = (e: SpeechRecognitionEvent) => {
+        chrome.runtime.sendMessage({ action: 'voice_error', error: (e as unknown as { error: string }).error })
+        delete (window as Record<string, unknown>).__echoTodoRec
+      }
+      rec.onend = () => { delete (window as Record<string, unknown>).__echoTodoRec }
+      rec.start()
+    },
+  })
+}
+
+async function stopVoiceInTab(): Promise<void> {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tab = tabs[0]
+  if (!tab?.id) return
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => {
+      const rec = (window as Record<string, unknown>).__echoTodoRec as SpeechRecognition | undefined
+      if (rec) { rec.stop(); delete (window as Record<string, unknown>).__echoTodoRec }
+    },
+  })
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.action === 'voice_start') startVoiceInTab()
+  else if (msg.action === 'voice_stop') stopVoiceInTab()
+})
+
+// ====== インストール時にアラームを設定
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create('ttl-check', { periodInMinutes: 5 })
   console.log('[Echo-Todo] Service Worker インストール完了')

@@ -3,7 +3,7 @@
   "name": "Echo-Todo",
   "version": "0.1.0",
   "description": "しゃべるだけでタスクを記録する、ゆるくて楽しいTodoアプリ",
-  "permissions": ["storage", "alarms"],
+  "permissions": ["storage", "alarms", "scripting", "activeTab"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
