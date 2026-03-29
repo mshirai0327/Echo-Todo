@@ -1,2 +1,4 @@
 */*.local.*
 specs/spec.local.md
+node_modules/
+dist/

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Echo-Todo</title>
+    <link rel="stylesheet" href="../styles/popup.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- ヘッダー -->
+      <header class="header">
+        <div class="header-title">🌟 Echo-Todo</div>
+      </header>
+
+      <!-- タブナビゲーション -->
+      <nav class="tabs">
+        <button class="tab-btn active" data-tab="main">🎯 タスク</button>
+        <button class="tab-btn" data-tab="stats">📊 統計</button>
+        <button class="tab-btn" data-tab="settings">⚙️ 設定</button>
+      </nav>
+
+      <!-- メイン画面 -->
+      <section id="tab-main" class="tab-content active">
+        <div class="task-list-container" id="task-list">
+          <div class="empty-state" id="empty-state">
+            <div class="empty-icon">🌸</div>
+            <p>タスクはまだありません</p>
+            <p>声に出して記録してみよう！</p>
+          </div>
+        </div>
+
+        <div class="input-area">
+          <div class="input-row">
+            <textarea
+              id="task-input"
+              class="task-input"
+              placeholder="タスクを入力 または 🎤 で話しかけて..."
+              rows="1"
+            ></textarea>
+            <button class="add-btn" id="add-btn" title="追加">➕</button>
+            <button class="mic-button" id="mic-btn" title="音声入力">🎤</button>
+          </div>
+          <div class="voice-status" id="voice-status"></div>
+        </div>
+      </section>
+
+      <!-- 統計画面 -->
+      <section id="tab-stats" class="tab-content">
+        <div class="stats-container">
+          <div class="stats-title">あなたのタスク記録 ✨</div>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-icon">🌱</div>
+              <div class="stat-value" id="stat-created">0</div>
+              <div class="stat-label">生み出した数</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon">✅</div>
+              <div class="stat-value" id="stat-closed">0</div>
+              <div class="stat-label">クローズした数</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon">🍃</div>
+              <div class="stat-value" id="stat-expired">0</div>
+              <div class="stat-label">消えた数</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon">⏱️</div>
+              <div class="stat-value" id="stat-avg-time">--</div>
+              <div class="stat-label">平均クローズ時間</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 設定画面 -->
+      <section id="tab-settings" class="tab-content">
+        <div class="settings-container">
+          <div class="settings-section">
+            <div class="settings-section-title">タスク設定</div>
+            <div class="form-group">
+              <label class="form-label" for="ttl-input">⏰ タスクの有効期限（時間）</label>
+              <input
+                type="number"
+                id="ttl-input"
+                class="form-input"
+                min="1"
+                max="720"
+                value="72"
+              />
+              <div class="form-hint">新しく作るタスクに適用されます（デフォルト: 72時間）</div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-title">AI設定</div>
+            <div class="form-group">
+              <label class="form-label" for="llm-mode">🤖 AIモード</label>
+              <select id="llm-mode" class="form-select">
+                <option value="nano">Gemini Nano（ローカル・無料）</option>
+                <option value="gemini">Gemini API</option>
+                <option value="openai">OpenAI API</option>
+              </select>
+              <div class="form-hint">Gemini Nanoはオフラインで動作します</div>
+            </div>
+
+            <div class="form-group" id="api-key-group">
+              <label class="form-label" for="api-key-input">🔑 APIキー</label>
+              <input
+                type="password"
+                id="api-key-input"
+                class="form-input"
+                placeholder="APIキーを入力してください"
+              />
+              <div class="form-hint">入力されたキーはローカルにのみ保存されます</div>
+            </div>
+          </div>
+
+          <button class="save-btn" id="save-settings-btn">💾 設定を保存</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- トースト通知コンテナ -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script type="module" src="./popup.ts"></script>
+  </body>
+</html>
