@@ -26,17 +26,18 @@ jobs:
       - name: Build extension
         run: npm run build
 
-      - name: Create ZIP
-        run: |
-          cd dist
-          zip -r ../echo-todo-extension.zip .
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: echo-todo-extension
-          path: echo-todo-extension.zip
+          path: dist
           retention-days: 30
+
+      - name: Create release ZIP
+        if: github.event_name == 'release'
+        run: |
+          cd dist
+          zip -r ../echo-todo-extension.zip .
 
       - name: Upload to release
         if: github.event_name == 'release'
