@@ -233,6 +233,7 @@ async function addTasksFromText(text: string): Promise<void> {
 const voiceRecorder = new VoiceRecorder()
 let isRecording = false
 let isPreparingRecording = false
+let hasOpenedMicPermissionHelper = false
 
 function getVoiceErrorMessage(error: VoiceError): string {
   return error === 'not-allowed' || error === 'service-not-allowed'
@@ -244,6 +245,35 @@ function getVoiceErrorMessage(error: VoiceError): string {
         : error === 'not-supported'
           ? '音声入力はこのブラウザでサポートされていません'
           : `音声入力エラー: ${error}`
+}
+
+function openMicPermissionPage(): void {
+  window.open('./mic-permission.html', '_blank', 'noopener,noreferrer')
+}
+
+function showMicPermissionHelp(autoOpen = false): void {
+  const statusEl = document.getElementById('voice-status')
+  if (!statusEl) return
+
+  const wrapper = document.createElement('div')
+  wrapper.className = 'voice-permission-help'
+
+  const message = document.createElement('span')
+  message.textContent = '許可専用ページでマイクを有効にしてください'
+
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'voice-permission-btn'
+  button.textContent = '許可ページを開く'
+  button.addEventListener('click', () => openMicPermissionPage())
+
+  wrapper.append(message, button)
+  statusEl.replaceChildren(wrapper)
+
+  if (autoOpen && !hasOpenedMicPermissionHelper) {
+    hasOpenedMicPermissionHelper = true
+    openMicPermissionPage()
+  }
 }
 
 function setupVoiceInput(): void {
@@ -278,6 +308,9 @@ async function startRecording(): Promise<void> {
     const accessError = await voiceRecorder.ensureMicrophoneAccess()
     if (accessError) {
       if (statusEl) statusEl.textContent = ''
+      if (accessError === 'not-allowed' || accessError === 'service-not-allowed') {
+        showMicPermissionHelp(true)
+      }
       showToast(getVoiceErrorMessage(accessError), 'error')
       return
     }
@@ -294,6 +327,9 @@ async function startRecording(): Promise<void> {
       (error) => {
         setRecordingState(false)
         if (statusEl) statusEl.textContent = ''
+        if (error === 'not-allowed' || error === 'service-not-allowed') {
+          showMicPermissionHelp(true)
+        }
         showToast(getVoiceErrorMessage(error), 'error')
       },
     )

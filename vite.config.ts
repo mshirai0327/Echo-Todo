@@ -12,6 +12,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'src/popup/popup.html'),
+        micPermission: resolve(__dirname, 'src/popup/mic-permission.html'),
         background: resolve(__dirname, 'src/background/background.ts'),
       },
       output: {

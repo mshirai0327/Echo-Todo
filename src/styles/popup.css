@@ -368,6 +368,30 @@ body {
   min-height: 14px;
 }
 
+.voice-permission-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.voice-permission-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+  background: linear-gradient(135deg, #fb7185 0%, #f59e0b 100%);
+  cursor: pointer;
+}
+
+.voice-permission-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
 /* ====== 統計画面 ====== */
 #tab-stats {
   display: none;
