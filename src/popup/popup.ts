@@ -1,6 +1,7 @@
 import {
   addTask,
   closeTask,
+  deleteTask,
   getAllTasks,
   getSettings,
   getStats,
@@ -15,6 +16,10 @@ import { extractTasks } from '../llm/llm'
 import { VoiceRecorder, type VoiceError } from '../voice/voice'
 
 // ====== ユーティリティ ======
+
+const LONG_PRESS_DURATION_MS = 600
+const SHINKI_CONFIRM_DURATION_MS = 1200
+const SHINKI_CONFIRM_SHORT_DURATION_MS = 320
 
 function formatDuration(ms: number): string {
   if (ms <= 0) return '--'
@@ -44,6 +49,47 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'info')
   }, 2500)
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function waitForAnimation(
+  element: HTMLElement,
+  animationName: string,
+  fallbackMs: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false
+
+    const cleanup = () => {
+      element.removeEventListener('animationend', onAnimationEnd)
+      window.clearTimeout(fallbackId)
+    }
+
+    const finish = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve()
+    }
+
+    const onAnimationEnd = (event: AnimationEvent) => {
+      if (event.target === element && event.animationName === animationName) {
+        finish()
+      }
+    }
+
+    const fallbackId = window.setTimeout(finish, fallbackMs)
+    element.addEventListener('animationend', onAnimationEnd)
+  })
+}
+
+function setTaskButtonsDisabled(element: HTMLElement, disabled: boolean): void {
+  element.querySelectorAll<HTMLButtonElement>('button').forEach((button) => {
+    button.disabled = disabled
+  })
+}
+
 function activateTab(tabId: 'main' | 'stats' | 'settings'): void {
   const tabBtns = document.querySelectorAll('.tab-btn')
   tabBtns.forEach((btn) => {
@@ -66,23 +112,143 @@ function createTaskElement(task: Task): HTMLElement {
   item.dataset.id = task.id
 
   const checkBtn = document.createElement('button')
+  checkBtn.type = 'button'
   checkBtn.className = 'task-check-btn'
-  checkBtn.title = '完了'
+  checkBtn.title = '完了にする'
   checkBtn.textContent = '✓'
 
   const textEl = document.createElement('div')
   textEl.className = 'task-text'
   textEl.textContent = task.text
 
-  item.appendChild(checkBtn)
-  item.appendChild(textEl)
+  const deleteBtn = document.createElement('button')
+  deleteBtn.type = 'button'
+  deleteBtn.className = 'task-delete-btn'
+  deleteBtn.title = 'クリックで完了、長押しで心機一転！'
+  deleteBtn.setAttribute('aria-label', 'タスクを削除')
+  deleteBtn.innerHTML = `
+    <svg class="delete-ring" viewBox="0 0 36 36" aria-hidden="true">
+      <circle class="delete-ring-track" cx="18" cy="18" r="15.915" pathLength="100"></circle>
+      <circle class="delete-ring-circle" cx="18" cy="18" r="15.915" pathLength="100"></circle>
+    </svg>
+    <span class="task-delete-icon" aria-hidden="true">×</span>
+  `
+
+  const overlay = document.createElement('div')
+  overlay.className = 'task-overlay'
+
+  const overlayText = document.createElement('span')
+  overlayText.className = 'task-overlay-text'
+  overlay.appendChild(overlayText)
+
+  item.append(checkBtn, textEl, deleteBtn, overlay)
+
+  let holdTimer: number | null = null
+  let suppressDeleteClick = false
+
+  const clearHoldTimer = () => {
+    if (holdTimer !== null) {
+      window.clearTimeout(holdTimer)
+      holdTimer = null
+    }
+    deleteBtn.classList.remove('pressing')
+  }
+
+  const setOverlayState = (message: string, accent = false) => {
+    overlayText.textContent = message
+    item.classList.add('overlay-visible')
+    item.classList.toggle('overlay-accent', accent)
+  }
+
+  const resetOverlayState = () => {
+    overlayText.textContent = ''
+    item.classList.remove('overlay-visible', 'overlay-accent', 'confirm-delete', 'shinki-itten')
+  }
+
+  const startShinkiDelete = async (confirmDuration: number) => {
+    if (item.classList.contains('task-busy')) return
+
+    suppressDeleteClick = true
+    clearHoldTimer()
+    setTaskButtonsDisabled(item, true)
+    item.classList.add('task-busy', 'confirm-delete')
+    setOverlayState('本当に消す？')
+
+    try {
+      await sleep(confirmDuration)
+      item.classList.remove('confirm-delete')
+      item.classList.add('shinki-itten')
+      setOverlayState('心機一転！', true)
+      await waitForAnimation(item, 'flyAway', 900)
+      await deleteTask(task.id)
+      item.remove()
+      showToast('心機一転！ 忘れて前へ進もう ✦', 'success')
+      updateEmptyState()
+    } catch (error) {
+      console.error('心機一転削除エラー:', error)
+      item.classList.remove('task-busy')
+      setTaskButtonsDisabled(item, false)
+      resetOverlayState()
+      showToast('タスクの完全削除に失敗しました', 'error')
+      await renderTasks()
+    }
+  }
 
   checkBtn.addEventListener('click', () => {
-    handleCloseTask(task, item)
+    if (item.classList.contains('task-busy')) return
+    void handleCloseTask(task, item)
   })
 
   textEl.addEventListener('click', () => {
+    if (item.classList.contains('task-busy')) return
     startEditingTask(task, textEl)
+  })
+
+  deleteBtn.addEventListener('pointerdown', (event: PointerEvent) => {
+    if (event.button !== 0 || event.shiftKey || item.classList.contains('task-busy')) {
+      return
+    }
+
+    clearHoldTimer()
+    deleteBtn.classList.add('pressing')
+    holdTimer = window.setTimeout(() => {
+      holdTimer = null
+      void startShinkiDelete(SHINKI_CONFIRM_DURATION_MS)
+    }, LONG_PRESS_DURATION_MS)
+  })
+
+  deleteBtn.addEventListener('pointerup', clearHoldTimer)
+  deleteBtn.addEventListener('pointerleave', clearHoldTimer)
+  deleteBtn.addEventListener('pointercancel', clearHoldTimer)
+
+  deleteBtn.addEventListener('contextmenu', (event) => {
+    if (item.classList.contains('task-busy') || holdTimer !== null) {
+      event.preventDefault()
+    }
+  })
+
+  deleteBtn.addEventListener('click', (event: MouseEvent) => {
+    if (suppressDeleteClick) {
+      suppressDeleteClick = false
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+
+    if (item.classList.contains('task-busy')) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+
+    if (event.shiftKey) {
+      event.preventDefault()
+      event.stopPropagation()
+      void startShinkiDelete(SHINKI_CONFIRM_SHORT_DURATION_MS)
+      return
+    }
+
+    void handleCloseTask(task, item)
   })
 
   return item
@@ -125,23 +291,30 @@ function startEditingTask(task: Task, textEl: HTMLElement): void {
 }
 
 async function handleCloseTask(task: Task, element: HTMLElement): Promise<void> {
-  element.classList.add('completing')
+  if (element.classList.contains('task-busy')) return
 
-  await new Promise<void>((resolve) => {
-    element.addEventListener('animationend', () => resolve(), { once: true })
-  })
+  element.classList.add('task-busy', 'removing')
+  setTaskButtonsDisabled(element, true)
 
-  await closeTask(task)
-  element.remove()
+  try {
+    await waitForAnimation(element, 'taskExit', 450)
+    await closeTask(task)
+    element.remove()
 
-  showToast('お疲れ様！✨', 'success')
+    showToast('お疲れ様！✨', 'success')
 
-  // 統計更新（statsタブが表示中なら）
-  if (document.getElementById('tab-stats')?.classList.contains('active')) {
-    await renderStats()
+    if (document.getElementById('tab-stats')?.classList.contains('active')) {
+      await renderStats()
+    }
+
+    updateEmptyState()
+  } catch (error) {
+    console.error('タスク完了エラー:', error)
+    element.classList.remove('task-busy', 'removing')
+    setTaskButtonsDisabled(element, false)
+    showToast('タスクの完了に失敗しました', 'error')
+    await renderTasks()
   }
-
-  updateEmptyState()
 }
 
 function updateEmptyState(): void {
