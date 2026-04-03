@@ -24,6 +24,14 @@ declare global {
   }
 }
 
+export type VoiceError =
+  | 'audio-capture'
+  | 'no-speech'
+  | 'not-allowed'
+  | 'not-supported'
+  | 'service-not-allowed'
+  | string
+
 export class VoiceRecorder {
   private recognition: SpeechRecognition | null = null
 
@@ -31,7 +39,34 @@ export class VoiceRecorder {
     return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
   }
 
-  start(onResult: (text: string) => void, onError: (error: string) => void): void {
+  async ensureMicrophoneAccess(): Promise<VoiceError | null> {
+    if (!navigator.mediaDevices?.getUserMedia) return null
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream.getTracks().forEach((track) => track.stop())
+      return null
+    } catch (error) {
+      if (!(error instanceof DOMException)) return 'not-allowed'
+
+      if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+        return 'not-allowed'
+      }
+
+      if (
+        error.name === 'NotFoundError' ||
+        error.name === 'DevicesNotFoundError' ||
+        error.name === 'NotReadableError' ||
+        error.name === 'TrackStartError'
+      ) {
+        return 'audio-capture'
+      }
+
+      return 'not-allowed'
+    }
+  }
+
+  start(onResult: (text: string) => void, onError: (error: VoiceError) => void): void {
     const Impl = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!Impl) {
       onError('not-supported')

@@ -12,7 +12,7 @@ import {
   updateTask,
 } from '../storage/db'
 import { extractTasks } from '../llm/llm'
-import { VoiceRecorder } from '../voice/voice'
+import { VoiceRecorder, type VoiceError } from '../voice/voice'
 
 // ====== ユーティリティ ======
 
@@ -232,6 +232,19 @@ async function addTasksFromText(text: string): Promise<void> {
 
 const voiceRecorder = new VoiceRecorder()
 let isRecording = false
+let isPreparingRecording = false
+
+function getVoiceErrorMessage(error: VoiceError): string {
+  return error === 'not-allowed' || error === 'service-not-allowed'
+    ? 'マイクの許可が必要です'
+    : error === 'no-speech'
+      ? '声をうまく認識できませんでした'
+      : error === 'audio-capture'
+        ? 'マイク入力を取得できませんでした'
+        : error === 'not-supported'
+          ? '音声入力はこのブラウザでサポートされていません'
+          : `音声入力エラー: ${error}`
+}
 
 function setupVoiceInput(): void {
   const micBtn = document.getElementById('mic-btn')
@@ -244,45 +257,49 @@ function setupVoiceInput(): void {
   }
 
   micBtn.addEventListener('click', () => {
+    if (isPreparingRecording) return
+
     if (isRecording) {
       voiceRecorder.stop()
       setRecordingState(false)
     } else {
-      startRecording()
+      void startRecording()
     }
   })
 }
 
-function startRecording(): void {
+async function startRecording(): Promise<void> {
   const statusEl = document.getElementById('voice-status')
 
-  setRecordingState(true)
-  if (statusEl) statusEl.textContent = '🔴 録音中... 話しかけてください'
+  isPreparingRecording = true
+  if (statusEl) statusEl.textContent = 'マイクを確認中...'
 
-  voiceRecorder.start(
-    async (text) => {
-      setRecordingState(false)
-      if (statusEl) statusEl.textContent = `認識: "${text}"`
-      await addTasksFromText(text)
-    },
-    (error) => {
-      setRecordingState(false)
+  try {
+    const accessError = await voiceRecorder.ensureMicrophoneAccess()
+    if (accessError) {
       if (statusEl) statusEl.textContent = ''
+      showToast(getVoiceErrorMessage(accessError), 'error')
+      return
+    }
 
-      const message =
-        error === 'not-allowed' || error === 'service-not-allowed'
-          ? 'マイクの許可が必要です'
-          : error === 'no-speech'
-            ? '声をうまく認識できませんでした'
-            : error === 'audio-capture'
-              ? 'マイク入力を取得できませんでした'
-              : error === 'not-supported'
-                ? '音声入力はこのブラウザでサポートされていません'
-                : `音声入力エラー: ${error}`
+    setRecordingState(true)
+    if (statusEl) statusEl.textContent = '🔴 録音中... 話しかけてください'
 
-      showToast(message, 'error')
-    },
-  )
+    voiceRecorder.start(
+      async (text) => {
+        setRecordingState(false)
+        if (statusEl) statusEl.textContent = `認識: "${text}"`
+        await addTasksFromText(text)
+      },
+      (error) => {
+        setRecordingState(false)
+        if (statusEl) statusEl.textContent = ''
+        showToast(getVoiceErrorMessage(error), 'error')
+      },
+    )
+  } finally {
+    isPreparingRecording = false
+  }
 }
 
 function setRecordingState(recording: boolean): void {
