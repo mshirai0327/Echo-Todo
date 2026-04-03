@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite build --watch",
-    "build": "vite build"
+    "generate:icons": "node scripts/generate-icons.mjs",
+    "dev": "npm run generate:icons && vite build --watch",
+    "build": "npm run generate:icons && vite build"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
