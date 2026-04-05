@@ -93,30 +93,6 @@
             </div>
           </div>
 
-          <div class="settings-section">
-            <div class="settings-section-title">AI設定</div>
-            <div class="form-group">
-              <label class="form-label" for="llm-mode">🤖 AIモード</label>
-              <select id="llm-mode" class="form-select">
-                <option value="input">入力のみ</option>
-                <option value="nano">Gemini Nano（ローカル・無料）</option>
-                <option value="gemini">Gemini API</option>
-              </select>
-              <div class="form-hint">APIキーなしでも使えます。Gemini Nanoはローカルで動作します</div>
-            </div>
-
-            <div class="form-group" id="api-key-group">
-              <label class="form-label" for="api-key-input">🔑 Gemini APIキー</label>
-              <input
-                type="password"
-                id="api-key-input"
-                class="form-input"
-                placeholder="必要な場合だけ入力してください"
-              />
-              <div class="form-hint">NanoモードのフォールバックやGemini APIモードで使います</div>
-            </div>
-          </div>
-
           <button class="save-btn" id="save-settings-btn">💾 設定を保存</button>
         </div>
       </section>

@@ -9,10 +9,9 @@ import {
   saveSettings,
   saveStats,
   type Task,
-  type Settings,
   updateTask,
 } from '../storage/db'
-import { extractTasks } from '../llm/llm'
+import { splitByRules } from '../llm/llm'
 import { VoiceRecorder, type VoiceError } from '../voice/voice'
 
 // ====== ユーティリティ ======
@@ -31,6 +30,17 @@ function formatDuration(ms: number): string {
   if (hours > 0) return `${hours}時間${minutes % 60}分`
   if (minutes > 0) return `${minutes}分`
   return `${totalSeconds}秒`
+}
+
+function formatTtl(expireAt: number): string {
+  const remaining = expireAt - Date.now()
+  if (remaining <= 0) return '期限切れ'
+  const totalMinutes = Math.ceil(remaining / 60000)
+  const hours = Math.floor(totalMinutes / 60)
+  const days = Math.floor(hours / 24)
+  if (days > 0) return `${days}日`
+  if (hours > 0) return `${hours}時間`
+  return `${totalMinutes}分`
 }
 
 function showToast(message: string, type: 'success' | 'error' | 'info' = 'info'): void {
@@ -124,6 +134,7 @@ function createTaskElement(task: Task): HTMLElement {
   const item = document.createElement('div')
   item.className = 'task-item'
   item.dataset.id = task.id
+  item.dataset.expireAt = String(task.expireAt)
 
   const checkBtn = document.createElement('button')
   checkBtn.type = 'button'
@@ -135,6 +146,10 @@ function createTaskElement(task: Task): HTMLElement {
   textEl.className = 'task-text'
   textEl.textContent = task.text
 
+  const ttlEl = document.createElement('span')
+  ttlEl.className = 'task-ttl'
+  ttlEl.textContent = formatTtl(task.expireAt)
+
   const overlay = document.createElement('div')
   overlay.className = 'task-overlay'
 
@@ -142,7 +157,7 @@ function createTaskElement(task: Task): HTMLElement {
   overlayText.className = 'task-overlay-text'
   overlay.appendChild(overlayText)
 
-  item.append(checkBtn, textEl, overlay)
+  item.append(checkBtn, textEl, ttlEl, overlay)
 
   checkBtn.addEventListener('click', () => {
     if (item.classList.contains('task-busy')) return
@@ -322,18 +337,10 @@ async function addTasksFromText(text: string): Promise<void> {
   try {
     const settings = await getSettings()
     if (statusEl) {
-      const processingLabel =
-        settings.llmMode === 'input'
-          ? 'タスクを追加中...'
-          : settings.llmMode === 'nano'
-          ? 'Gemini Nano で整理中...'
-          : settings.llmMode === 'gemini'
-            ? 'Gemini API で整理中...'
-            : 'タスクを整理中...'
-      statusEl.innerHTML = `<div class="processing-indicator"><div class="spinner"></div> ${processingLabel}</div>`
+      statusEl.innerHTML = `<div class="processing-indicator"><div class="spinner"></div> タスクを追加中...</div>`
     }
 
-    const taskTexts = await extractTasks(trimmed, settings)
+    const taskTexts = splitByRules(trimmed)
 
     const now = Date.now()
     const ttlMs = settings.ttlHours * 3600 * 1000
@@ -547,58 +554,23 @@ async function renderSettings(): Promise<void> {
   const settings = await getSettings()
 
   const ttlInput = document.getElementById('ttl-input') as HTMLInputElement | null
-  const llmMode = document.getElementById('llm-mode') as HTMLSelectElement | null
-  const apiKeyInput = document.getElementById('api-key-input') as HTMLInputElement | null
-  const apiKeyGroup = document.getElementById('api-key-group')
-
   if (ttlInput) ttlInput.value = String(settings.ttlHours)
-  if (llmMode) llmMode.value = settings.llmMode
-  if (apiKeyInput) apiKeyInput.value = settings.apiKey ?? ''
-  updateApiKeyVisibility(settings.llmMode, apiKeyGroup)
-}
-
-function updateApiKeyVisibility(mode: Settings['llmMode'], apiKeyGroup: HTMLElement | null): void {
-  if (!apiKeyGroup) return
-  if (mode === 'nano' || mode === 'gemini') {
-    apiKeyGroup.classList.add('visible')
-  } else {
-    apiKeyGroup.classList.remove('visible')
-  }
 }
 
 function setupSettings(): void {
-  const llmMode = document.getElementById('llm-mode') as HTMLSelectElement | null
-  const apiKeyGroup = document.getElementById('api-key-group')
   const saveBtn = document.getElementById('save-settings-btn')
-
-  if (llmMode && apiKeyGroup) {
-    llmMode.addEventListener('change', () => {
-      updateApiKeyVisibility(llmMode.value as Settings['llmMode'], apiKeyGroup)
-    })
-  }
 
   if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
       const ttlInput = document.getElementById('ttl-input') as HTMLInputElement | null
-      const llmModeEl = document.getElementById('llm-mode') as HTMLSelectElement | null
-      const apiKeyInput = document.getElementById('api-key-input') as HTMLInputElement | null
-
       const ttlHours = ttlInput ? parseInt(ttlInput.value, 10) : 72
-      const llmMode = (llmModeEl?.value ?? 'input') as Settings['llmMode']
-      const apiKey = apiKeyInput?.value.trim() || undefined
 
       if (isNaN(ttlHours) || ttlHours < 1) {
         showToast('有効期限は1以上の数値を入力してください', 'error')
         return
       }
 
-      const settings: Settings = {
-        ttlHours,
-        llmMode,
-        apiKey,
-      }
-
-      await saveSettings(settings)
+      await saveSettings({ ttlHours })
       showToast('設定を保存しました 💾', 'success')
     })
   }
@@ -630,6 +602,18 @@ function setupTabs(): void {
 
 // ====== 初期化 ======
 
+function startTtlUpdateTimer(): void {
+  setInterval(() => {
+    document.querySelectorAll<HTMLElement>('.task-item[data-id]').forEach((item) => {
+      const ttlEl = item.querySelector<HTMLElement>('.task-ttl')
+      const expireAt = Number(item.dataset.expireAt)
+      if (ttlEl && expireAt) {
+        ttlEl.textContent = formatTtl(expireAt)
+      }
+    })
+  }, 60000)
+}
+
 async function init(): Promise<void> {
   await initDB()
 
@@ -639,6 +623,7 @@ async function init(): Promise<void> {
   setupSettings()
 
   await renderTasks()
+  startTtlUpdateTimer()
 }
 
 document.addEventListener('DOMContentLoaded', () => {
