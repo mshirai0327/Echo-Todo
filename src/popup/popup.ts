@@ -1,6 +1,7 @@
 import {
   addTask,
   closeTask,
+  expireTask,
   getAllTasks,
   getSettings,
   getStats,
@@ -8,13 +9,15 @@ import {
   saveSettings,
   saveStats,
   type Task,
-  type Settings,
   updateTask,
 } from '../storage/db'
-import { extractTasks } from '../llm/llm'
+import { splitByRules } from '../llm/llm'
 import { VoiceRecorder, type VoiceError } from '../voice/voice'
 
 // ====== ユーティリティ ======
+
+const EXPIRED_TASK_INITIAL_DELAY_MS = 200
+const EXPIRED_TASK_STAGGER_MS = 300
 
 function formatDuration(ms: number): string {
   if (ms <= 0) return '--'
@@ -27,6 +30,15 @@ function formatDuration(ms: number): string {
   if (hours > 0) return `${hours}時間${minutes % 60}分`
   if (minutes > 0) return `${minutes}分`
   return `${totalSeconds}秒`
+}
+
+function formatTtl(expireAt: number): string {
+  const remaining = expireAt - Date.now()
+  if (remaining <= 0) return '期限切れ'
+  const totalMinutes = Math.ceil(remaining / 60000)
+  const hours = Math.floor(totalMinutes / 60)
+  if (hours > 0) return `${hours}時間`
+  return `${totalMinutes}分`
 }
 
 function showToast(message: string, type: 'success' | 'error' | 'info' = 'info'): void {
@@ -42,6 +54,62 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'info')
     toast.classList.add('removing')
     toast.addEventListener('animationend', () => toast.remove())
   }, 2500)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function waitForAnimation(
+  element: HTMLElement,
+  animationName: string,
+  fallbackMs: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false
+
+    const cleanup = () => {
+      element.removeEventListener('animationend', onAnimationEnd)
+      window.clearTimeout(fallbackId)
+    }
+
+    const finish = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve()
+    }
+
+    const onAnimationEnd = (event: AnimationEvent) => {
+      if (event.target === element && event.animationName === animationName) {
+        finish()
+      }
+    }
+
+    const fallbackId = window.setTimeout(finish, fallbackMs)
+    element.addEventListener('animationend', onAnimationEnd)
+  })
+}
+
+function setTaskButtonsDisabled(element: HTMLElement, disabled: boolean): void {
+  element.querySelectorAll<HTMLButtonElement>('button').forEach((button) => {
+    button.disabled = disabled
+  })
+}
+
+function setTaskOverlayState(item: HTMLElement, message: string, accent = false): void {
+  const overlayText = item.querySelector<HTMLElement>('.task-overlay-text')
+  if (overlayText) overlayText.textContent = message
+
+  item.classList.add('overlay-visible')
+  item.classList.toggle('overlay-accent', accent)
+}
+
+function resetTaskOverlayState(item: HTMLElement): void {
+  const overlayText = item.querySelector<HTMLElement>('.task-overlay-text')
+  if (overlayText) overlayText.textContent = ''
+
+  item.classList.remove('overlay-visible', 'overlay-accent', 'shinki-itten')
 }
 
 function activateTab(tabId: 'main' | 'stats' | 'settings'): void {
@@ -64,28 +132,64 @@ function createTaskElement(task: Task): HTMLElement {
   const item = document.createElement('div')
   item.className = 'task-item'
   item.dataset.id = task.id
+  item.dataset.expireAt = String(task.expireAt)
 
   const checkBtn = document.createElement('button')
+  checkBtn.type = 'button'
   checkBtn.className = 'task-check-btn'
-  checkBtn.title = '完了'
+  checkBtn.title = '完了にする'
   checkBtn.textContent = '✓'
 
   const textEl = document.createElement('div')
   textEl.className = 'task-text'
   textEl.textContent = task.text
 
-  item.appendChild(checkBtn)
-  item.appendChild(textEl)
+  const ttlEl = document.createElement('span')
+  ttlEl.className = 'task-ttl'
+  ttlEl.textContent = formatTtl(task.expireAt)
+
+  const overlay = document.createElement('div')
+  overlay.className = 'task-overlay'
+
+  const overlayText = document.createElement('span')
+  overlayText.className = 'task-overlay-text'
+  overlay.appendChild(overlayText)
+
+  item.append(checkBtn, textEl, ttlEl, overlay)
 
   checkBtn.addEventListener('click', () => {
-    handleCloseTask(task, item)
+    if (item.classList.contains('task-busy')) return
+    void handleCloseTask(task, item)
   })
 
   textEl.addEventListener('click', () => {
+    if (item.classList.contains('task-busy')) return
     startEditingTask(task, textEl)
   })
 
   return item
+}
+
+async function startShinkiAutoDelete(task: Task, item: HTMLElement): Promise<void> {
+  const isPendingAutoDelete = item.classList.contains('task-expiring')
+  if (item.classList.contains('task-busy') && !isPendingAutoDelete) return
+
+  item.classList.remove('task-expiring')
+  setTaskButtonsDisabled(item, true)
+  item.classList.add('task-busy', 'shinki-itten')
+  setTaskOverlayState(item, '心機一転！', true)
+
+  try {
+    await waitForAnimation(item, 'flyAway', 900)
+    await expireTask(task.id)
+    item.remove()
+  } catch (error) {
+    console.error('期限切れタスクの自動削除エラー:', error)
+    item.classList.remove('task-busy', 'shinki-itten')
+    setTaskButtonsDisabled(item, false)
+    resetTaskOverlayState(item)
+    showToast('期限切れタスクの整理に失敗しました', 'error')
+  }
 }
 
 function startEditingTask(task: Task, textEl: HTMLElement): void {
@@ -125,23 +229,30 @@ function startEditingTask(task: Task, textEl: HTMLElement): void {
 }
 
 async function handleCloseTask(task: Task, element: HTMLElement): Promise<void> {
-  element.classList.add('completing')
+  if (element.classList.contains('task-busy')) return
 
-  await new Promise<void>((resolve) => {
-    element.addEventListener('animationend', () => resolve(), { once: true })
-  })
+  element.classList.add('task-busy', 'removing')
+  setTaskButtonsDisabled(element, true)
 
-  await closeTask(task)
-  element.remove()
+  try {
+    await waitForAnimation(element, 'taskExit', 450)
+    await closeTask(task)
+    element.remove()
 
-  showToast('お疲れ様！✨', 'success')
+    showToast('お疲れ様！✨', 'success')
 
-  // 統計更新（statsタブが表示中なら）
-  if (document.getElementById('tab-stats')?.classList.contains('active')) {
-    await renderStats()
+    if (document.getElementById('tab-stats')?.classList.contains('active')) {
+      await renderStats()
+    }
+
+    updateEmptyState()
+  } catch (error) {
+    console.error('タスク完了エラー:', error)
+    element.classList.remove('task-busy', 'removing')
+    setTaskButtonsDisabled(element, false)
+    showToast('タスクの完了に失敗しました', 'error')
+    await renderTasks()
   }
-
-  updateEmptyState()
 }
 
 function updateEmptyState(): void {
@@ -153,27 +264,64 @@ function updateEmptyState(): void {
   emptyState.style.display = tasks.length === 0 ? '' : 'none'
 }
 
+let renderTasksGeneration = 0
+
 async function renderTasks(): Promise<void> {
   const list = document.getElementById('task-list')
   const emptyState = document.getElementById('empty-state')
   if (!list || !emptyState) return
 
+  const renderGeneration = ++renderTasksGeneration
   const tasks = await getAllTasks()
   const now = Date.now()
-  const activeTasks = tasks.filter((t) => t.expireAt > now)
+  const activeTasks = tasks.filter((t) => t.expireAt >= now)
+  const expiredTasks = tasks.filter((t) => t.expireAt < now)
 
   // 既存のタスクアイテムをクリア（emptyStateは残す）
   const existingItems = list.querySelectorAll('.task-item')
   existingItems.forEach((el) => el.remove())
 
   activeTasks.sort((a, b) => b.createdAt - a.createdAt)
+  expiredTasks.sort((a, b) => b.createdAt - a.createdAt)
 
   for (const task of activeTasks) {
     const el = createTaskElement(task)
     list.insertBefore(el, emptyState)
   }
 
-  emptyState.style.display = activeTasks.length === 0 ? '' : 'none'
+  const expiredEntries: Array<{ task: Task; element: HTMLElement }> = []
+  for (const task of expiredTasks) {
+    const el = createTaskElement(task)
+    el.classList.add('task-busy', 'task-expiring')
+    setTaskButtonsDisabled(el, true)
+    list.insertBefore(el, emptyState)
+    expiredEntries.push({ task, element: el })
+  }
+
+  emptyState.style.display = activeTasks.length === 0 && expiredTasks.length === 0 ? '' : 'none'
+
+  if (expiredEntries.length === 0) return
+
+  await sleep(EXPIRED_TASK_INITIAL_DELAY_MS)
+  if (renderGeneration !== renderTasksGeneration) return
+
+  for (const [index, entry] of expiredEntries.entries()) {
+    if (index > 0) {
+      await sleep(EXPIRED_TASK_STAGGER_MS)
+      if (renderGeneration !== renderTasksGeneration) return
+    }
+
+    if (!entry.element.isConnected) continue
+    await startShinkiAutoDelete(entry.task, entry.element)
+  }
+
+  if (renderGeneration !== renderTasksGeneration) return
+
+  updateEmptyState()
+
+  if (document.getElementById('tab-stats')?.classList.contains('active')) {
+    await renderStats()
+  }
 }
 
 // ====== タスク追加 ======
@@ -187,18 +335,10 @@ async function addTasksFromText(text: string): Promise<void> {
   try {
     const settings = await getSettings()
     if (statusEl) {
-      const processingLabel =
-        settings.llmMode === 'input'
-          ? 'タスクを追加中...'
-          : settings.llmMode === 'nano'
-          ? 'Gemini Nano で整理中...'
-          : settings.llmMode === 'gemini'
-            ? 'Gemini API で整理中...'
-            : 'タスクを整理中...'
-      statusEl.innerHTML = `<div class="processing-indicator"><div class="spinner"></div> ${processingLabel}</div>`
+      statusEl.innerHTML = `<div class="processing-indicator"><div class="spinner"></div> タスクを追加中...</div>`
     }
 
-    const taskTexts = await extractTasks(trimmed, settings)
+    const taskTexts = splitByRules(trimmed)
 
     const now = Date.now()
     const ttlMs = settings.ttlHours * 3600 * 1000
@@ -233,7 +373,6 @@ async function addTasksFromText(text: string): Promise<void> {
 const voiceRecorder = new VoiceRecorder()
 let isRecording = false
 let isPreparingRecording = false
-let hasOpenedMicPermissionHelper = false
 
 function getVoiceErrorMessage(error: VoiceError): string {
   return error === 'not-allowed' || error === 'service-not-allowed'
@@ -251,15 +390,24 @@ function openMicPermissionPage(): void {
   window.open('./mic-permission.html', '_blank', 'noopener,noreferrer')
 }
 
-function showMicPermissionHelp(autoOpen = false): void {
+function showMicPermissionHelp(): void {
   const statusEl = document.getElementById('voice-status')
   if (!statusEl) return
 
   const wrapper = document.createElement('div')
   wrapper.className = 'voice-permission-help'
 
-  const message = document.createElement('span')
-  message.textContent = '許可専用ページでマイクを有効にしてください'
+  const copy = document.createElement('div')
+  copy.className = 'voice-permission-copy'
+
+  const title = document.createElement('p')
+  title.textContent = 'マイクを使うには許可が必要です'
+
+  const detailTop = document.createElement('p')
+  detailTop.textContent = '専用ページでブラウザの許可をオンにすると'
+
+  const detailBottom = document.createElement('p')
+  detailBottom.textContent = '音声でタスクを追加できます'
 
   const button = document.createElement('button')
   button.type = 'button'
@@ -267,13 +415,9 @@ function showMicPermissionHelp(autoOpen = false): void {
   button.textContent = '許可ページを開く'
   button.addEventListener('click', () => openMicPermissionPage())
 
-  wrapper.append(message, button)
+  copy.append(title, detailTop, detailBottom)
+  wrapper.append(copy, button)
   statusEl.replaceChildren(wrapper)
-
-  if (autoOpen && !hasOpenedMicPermissionHelper) {
-    hasOpenedMicPermissionHelper = true
-    openMicPermissionPage()
-  }
 }
 
 function setupVoiceInput(): void {
@@ -309,7 +453,7 @@ async function startRecording(): Promise<void> {
     if (accessError) {
       if (statusEl) statusEl.textContent = ''
       if (accessError === 'not-allowed' || accessError === 'service-not-allowed') {
-        showMicPermissionHelp(true)
+        showMicPermissionHelp()
       }
       showToast(getVoiceErrorMessage(accessError), 'error')
       return
@@ -328,7 +472,7 @@ async function startRecording(): Promise<void> {
         setRecordingState(false)
         if (statusEl) statusEl.textContent = ''
         if (error === 'not-allowed' || error === 'service-not-allowed') {
-          showMicPermissionHelp(true)
+          showMicPermissionHelp()
         }
         showToast(getVoiceErrorMessage(error), 'error')
       },
@@ -408,58 +552,23 @@ async function renderSettings(): Promise<void> {
   const settings = await getSettings()
 
   const ttlInput = document.getElementById('ttl-input') as HTMLInputElement | null
-  const llmMode = document.getElementById('llm-mode') as HTMLSelectElement | null
-  const apiKeyInput = document.getElementById('api-key-input') as HTMLInputElement | null
-  const apiKeyGroup = document.getElementById('api-key-group')
-
   if (ttlInput) ttlInput.value = String(settings.ttlHours)
-  if (llmMode) llmMode.value = settings.llmMode
-  if (apiKeyInput) apiKeyInput.value = settings.apiKey ?? ''
-  updateApiKeyVisibility(settings.llmMode, apiKeyGroup)
-}
-
-function updateApiKeyVisibility(mode: Settings['llmMode'], apiKeyGroup: HTMLElement | null): void {
-  if (!apiKeyGroup) return
-  if (mode === 'nano' || mode === 'gemini') {
-    apiKeyGroup.classList.add('visible')
-  } else {
-    apiKeyGroup.classList.remove('visible')
-  }
 }
 
 function setupSettings(): void {
-  const llmMode = document.getElementById('llm-mode') as HTMLSelectElement | null
-  const apiKeyGroup = document.getElementById('api-key-group')
   const saveBtn = document.getElementById('save-settings-btn')
-
-  if (llmMode && apiKeyGroup) {
-    llmMode.addEventListener('change', () => {
-      updateApiKeyVisibility(llmMode.value as Settings['llmMode'], apiKeyGroup)
-    })
-  }
 
   if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
       const ttlInput = document.getElementById('ttl-input') as HTMLInputElement | null
-      const llmModeEl = document.getElementById('llm-mode') as HTMLSelectElement | null
-      const apiKeyInput = document.getElementById('api-key-input') as HTMLInputElement | null
-
       const ttlHours = ttlInput ? parseInt(ttlInput.value, 10) : 72
-      const llmMode = (llmModeEl?.value ?? 'input') as Settings['llmMode']
-      const apiKey = apiKeyInput?.value.trim() || undefined
 
       if (isNaN(ttlHours) || ttlHours < 1) {
         showToast('有効期限は1以上の数値を入力してください', 'error')
         return
       }
 
-      const settings: Settings = {
-        ttlHours,
-        llmMode,
-        apiKey,
-      }
-
-      await saveSettings(settings)
+      await saveSettings({ ttlHours })
       showToast('設定を保存しました 💾', 'success')
     })
   }
@@ -491,6 +600,18 @@ function setupTabs(): void {
 
 // ====== 初期化 ======
 
+function startTtlUpdateTimer(): void {
+  setInterval(() => {
+    document.querySelectorAll<HTMLElement>('.task-item[data-id]').forEach((item) => {
+      const ttlEl = item.querySelector<HTMLElement>('.task-ttl')
+      const expireAt = Number(item.dataset.expireAt)
+      if (ttlEl && expireAt) {
+        ttlEl.textContent = formatTtl(expireAt)
+      }
+    })
+  }, 60000)
+}
+
 async function init(): Promise<void> {
   await initDB()
 
@@ -500,6 +621,7 @@ async function init(): Promise<void> {
   setupSettings()
 
   await renderTasks()
+  startTtlUpdateTimer()
 }
 
 document.addEventListener('DOMContentLoaded', () => {
