@@ -152,6 +152,35 @@ export async function deleteTask(id: string): Promise<void> {
   })
 }
 
+export async function expireTask(id: string): Promise<boolean> {
+  const db = await getDB()
+  const deleted = await new Promise<boolean>((resolve, reject) => {
+    const tx = db.transaction('tasks', 'readwrite')
+    const store = tx.objectStore('tasks')
+    const getRequest = store.get(id)
+
+    getRequest.onsuccess = () => {
+      if (!getRequest.result) {
+        resolve(false)
+        return
+      }
+
+      const deleteRequest = store.delete(id)
+      deleteRequest.onsuccess = () => resolve(true)
+      deleteRequest.onerror = () => reject(deleteRequest.error)
+    }
+
+    getRequest.onerror = () => reject(getRequest.error)
+  })
+
+  if (!deleted) return false
+
+  const stats = await getStats()
+  stats.totalExpired += 1
+  await saveStats(stats)
+  return true
+}
+
 export async function getExpiredTasks(now: number): Promise<Task[]> {
   const tasks = await getAllTasks()
   return tasks.filter((t) => t.expireAt < now)

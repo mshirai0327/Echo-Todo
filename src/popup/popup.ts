@@ -1,7 +1,7 @@
 import {
   addTask,
   closeTask,
-  deleteTask,
+  expireTask,
   getAllTasks,
   getSettings,
   getStats,
@@ -17,9 +17,8 @@ import { VoiceRecorder, type VoiceError } from '../voice/voice'
 
 // ====== ユーティリティ ======
 
-const LONG_PRESS_DURATION_MS = 600
-const SHINKI_CONFIRM_DURATION_MS = 1200
-const SHINKI_CONFIRM_SHORT_DURATION_MS = 320
+const EXPIRED_TASK_INITIAL_DELAY_MS = 200
+const EXPIRED_TASK_STAGGER_MS = 300
 
 function formatDuration(ms: number): string {
   if (ms <= 0) return '--'
@@ -90,6 +89,21 @@ function setTaskButtonsDisabled(element: HTMLElement, disabled: boolean): void {
   })
 }
 
+function setTaskOverlayState(item: HTMLElement, message: string, accent = false): void {
+  const overlayText = item.querySelector<HTMLElement>('.task-overlay-text')
+  if (overlayText) overlayText.textContent = message
+
+  item.classList.add('overlay-visible')
+  item.classList.toggle('overlay-accent', accent)
+}
+
+function resetTaskOverlayState(item: HTMLElement): void {
+  const overlayText = item.querySelector<HTMLElement>('.task-overlay-text')
+  if (overlayText) overlayText.textContent = ''
+
+  item.classList.remove('overlay-visible', 'overlay-accent', 'shinki-itten')
+}
+
 function activateTab(tabId: 'main' | 'stats' | 'settings'): void {
   const tabBtns = document.querySelectorAll('.tab-btn')
   tabBtns.forEach((btn) => {
@@ -121,19 +135,6 @@ function createTaskElement(task: Task): HTMLElement {
   textEl.className = 'task-text'
   textEl.textContent = task.text
 
-  const deleteBtn = document.createElement('button')
-  deleteBtn.type = 'button'
-  deleteBtn.className = 'task-delete-btn'
-  deleteBtn.title = 'クリックで完了、長押しで心機一転！'
-  deleteBtn.setAttribute('aria-label', 'タスクを削除')
-  deleteBtn.innerHTML = `
-    <svg class="delete-ring" viewBox="0 0 36 36" aria-hidden="true">
-      <circle class="delete-ring-track" cx="18" cy="18" r="15.915" pathLength="100"></circle>
-      <circle class="delete-ring-circle" cx="18" cy="18" r="15.915" pathLength="100"></circle>
-    </svg>
-    <span class="task-delete-icon" aria-hidden="true">×</span>
-  `
-
   const overlay = document.createElement('div')
   overlay.className = 'task-overlay'
 
@@ -141,58 +142,7 @@ function createTaskElement(task: Task): HTMLElement {
   overlayText.className = 'task-overlay-text'
   overlay.appendChild(overlayText)
 
-  item.append(checkBtn, textEl, deleteBtn, overlay)
-
-  let holdTimer: number | null = null
-  let suppressDeleteClick = false
-
-  const clearHoldTimer = () => {
-    if (holdTimer !== null) {
-      window.clearTimeout(holdTimer)
-      holdTimer = null
-    }
-    deleteBtn.classList.remove('pressing')
-  }
-
-  const setOverlayState = (message: string, accent = false) => {
-    overlayText.textContent = message
-    item.classList.add('overlay-visible')
-    item.classList.toggle('overlay-accent', accent)
-  }
-
-  const resetOverlayState = () => {
-    overlayText.textContent = ''
-    item.classList.remove('overlay-visible', 'overlay-accent', 'confirm-delete', 'shinki-itten')
-  }
-
-  const startShinkiDelete = async (confirmDuration: number) => {
-    if (item.classList.contains('task-busy')) return
-
-    suppressDeleteClick = true
-    clearHoldTimer()
-    setTaskButtonsDisabled(item, true)
-    item.classList.add('task-busy', 'confirm-delete')
-    setOverlayState('本当に消す？')
-
-    try {
-      await sleep(confirmDuration)
-      item.classList.remove('confirm-delete')
-      item.classList.add('shinki-itten')
-      setOverlayState('心機一転！', true)
-      await waitForAnimation(item, 'flyAway', 900)
-      await deleteTask(task.id)
-      item.remove()
-      showToast('心機一転！ 忘れて前へ進もう ✦', 'success')
-      updateEmptyState()
-    } catch (error) {
-      console.error('心機一転削除エラー:', error)
-      item.classList.remove('task-busy')
-      setTaskButtonsDisabled(item, false)
-      resetOverlayState()
-      showToast('タスクの完全削除に失敗しました', 'error')
-      await renderTasks()
-    }
-  }
+  item.append(checkBtn, textEl, overlay)
 
   checkBtn.addEventListener('click', () => {
     if (item.classList.contains('task-busy')) return
@@ -204,54 +154,29 @@ function createTaskElement(task: Task): HTMLElement {
     startEditingTask(task, textEl)
   })
 
-  deleteBtn.addEventListener('pointerdown', (event: PointerEvent) => {
-    if (event.button !== 0 || event.shiftKey || item.classList.contains('task-busy')) {
-      return
-    }
-
-    clearHoldTimer()
-    deleteBtn.classList.add('pressing')
-    holdTimer = window.setTimeout(() => {
-      holdTimer = null
-      void startShinkiDelete(SHINKI_CONFIRM_DURATION_MS)
-    }, LONG_PRESS_DURATION_MS)
-  })
-
-  deleteBtn.addEventListener('pointerup', clearHoldTimer)
-  deleteBtn.addEventListener('pointerleave', clearHoldTimer)
-  deleteBtn.addEventListener('pointercancel', clearHoldTimer)
-
-  deleteBtn.addEventListener('contextmenu', (event) => {
-    if (item.classList.contains('task-busy') || holdTimer !== null) {
-      event.preventDefault()
-    }
-  })
-
-  deleteBtn.addEventListener('click', (event: MouseEvent) => {
-    if (suppressDeleteClick) {
-      suppressDeleteClick = false
-      event.preventDefault()
-      event.stopPropagation()
-      return
-    }
-
-    if (item.classList.contains('task-busy')) {
-      event.preventDefault()
-      event.stopPropagation()
-      return
-    }
-
-    if (event.shiftKey) {
-      event.preventDefault()
-      event.stopPropagation()
-      void startShinkiDelete(SHINKI_CONFIRM_SHORT_DURATION_MS)
-      return
-    }
-
-    void handleCloseTask(task, item)
-  })
-
   return item
+}
+
+async function startShinkiAutoDelete(task: Task, item: HTMLElement): Promise<void> {
+  const isPendingAutoDelete = item.classList.contains('task-expiring')
+  if (item.classList.contains('task-busy') && !isPendingAutoDelete) return
+
+  item.classList.remove('task-expiring')
+  setTaskButtonsDisabled(item, true)
+  item.classList.add('task-busy', 'shinki-itten')
+  setTaskOverlayState(item, '心機一転！', true)
+
+  try {
+    await waitForAnimation(item, 'flyAway', 900)
+    await expireTask(task.id)
+    item.remove()
+  } catch (error) {
+    console.error('期限切れタスクの自動削除エラー:', error)
+    item.classList.remove('task-busy', 'shinki-itten')
+    setTaskButtonsDisabled(item, false)
+    resetTaskOverlayState(item)
+    showToast('期限切れタスクの整理に失敗しました', 'error')
+  }
 }
 
 function startEditingTask(task: Task, textEl: HTMLElement): void {
@@ -326,27 +251,64 @@ function updateEmptyState(): void {
   emptyState.style.display = tasks.length === 0 ? '' : 'none'
 }
 
+let renderTasksGeneration = 0
+
 async function renderTasks(): Promise<void> {
   const list = document.getElementById('task-list')
   const emptyState = document.getElementById('empty-state')
   if (!list || !emptyState) return
 
+  const renderGeneration = ++renderTasksGeneration
   const tasks = await getAllTasks()
   const now = Date.now()
-  const activeTasks = tasks.filter((t) => t.expireAt > now)
+  const activeTasks = tasks.filter((t) => t.expireAt >= now)
+  const expiredTasks = tasks.filter((t) => t.expireAt < now)
 
   // 既存のタスクアイテムをクリア（emptyStateは残す）
   const existingItems = list.querySelectorAll('.task-item')
   existingItems.forEach((el) => el.remove())
 
   activeTasks.sort((a, b) => b.createdAt - a.createdAt)
+  expiredTasks.sort((a, b) => b.createdAt - a.createdAt)
 
   for (const task of activeTasks) {
     const el = createTaskElement(task)
     list.insertBefore(el, emptyState)
   }
 
-  emptyState.style.display = activeTasks.length === 0 ? '' : 'none'
+  const expiredEntries: Array<{ task: Task; element: HTMLElement }> = []
+  for (const task of expiredTasks) {
+    const el = createTaskElement(task)
+    el.classList.add('task-busy', 'task-expiring')
+    setTaskButtonsDisabled(el, true)
+    list.insertBefore(el, emptyState)
+    expiredEntries.push({ task, element: el })
+  }
+
+  emptyState.style.display = activeTasks.length === 0 && expiredTasks.length === 0 ? '' : 'none'
+
+  if (expiredEntries.length === 0) return
+
+  await sleep(EXPIRED_TASK_INITIAL_DELAY_MS)
+  if (renderGeneration !== renderTasksGeneration) return
+
+  for (const [index, entry] of expiredEntries.entries()) {
+    if (index > 0) {
+      await sleep(EXPIRED_TASK_STAGGER_MS)
+      if (renderGeneration !== renderTasksGeneration) return
+    }
+
+    if (!entry.element.isConnected) continue
+    await startShinkiAutoDelete(entry.task, entry.element)
+  }
+
+  if (renderGeneration !== renderTasksGeneration) return
+
+  updateEmptyState()
+
+  if (document.getElementById('tab-stats')?.classList.contains('active')) {
+    await renderStats()
+  }
 }
 
 // ====== タスク追加 ======
@@ -406,7 +368,6 @@ async function addTasksFromText(text: string): Promise<void> {
 const voiceRecorder = new VoiceRecorder()
 let isRecording = false
 let isPreparingRecording = false
-let hasOpenedMicPermissionHelper = false
 
 function getVoiceErrorMessage(error: VoiceError): string {
   return error === 'not-allowed' || error === 'service-not-allowed'
@@ -424,15 +385,24 @@ function openMicPermissionPage(): void {
   window.open('./mic-permission.html', '_blank', 'noopener,noreferrer')
 }
 
-function showMicPermissionHelp(autoOpen = false): void {
+function showMicPermissionHelp(): void {
   const statusEl = document.getElementById('voice-status')
   if (!statusEl) return
 
   const wrapper = document.createElement('div')
   wrapper.className = 'voice-permission-help'
 
-  const message = document.createElement('span')
-  message.textContent = '許可専用ページでマイクを有効にしてください'
+  const copy = document.createElement('div')
+  copy.className = 'voice-permission-copy'
+
+  const title = document.createElement('p')
+  title.textContent = 'マイクを使うには許可が必要です'
+
+  const detailTop = document.createElement('p')
+  detailTop.textContent = '専用ページでブラウザの許可をオンにすると'
+
+  const detailBottom = document.createElement('p')
+  detailBottom.textContent = '音声でタスクを追加できます'
 
   const button = document.createElement('button')
   button.type = 'button'
@@ -440,13 +410,9 @@ function showMicPermissionHelp(autoOpen = false): void {
   button.textContent = '許可ページを開く'
   button.addEventListener('click', () => openMicPermissionPage())
 
-  wrapper.append(message, button)
+  copy.append(title, detailTop, detailBottom)
+  wrapper.append(copy, button)
   statusEl.replaceChildren(wrapper)
-
-  if (autoOpen && !hasOpenedMicPermissionHelper) {
-    hasOpenedMicPermissionHelper = true
-    openMicPermissionPage()
-  }
 }
 
 function setupVoiceInput(): void {
@@ -482,7 +448,7 @@ async function startRecording(): Promise<void> {
     if (accessError) {
       if (statusEl) statusEl.textContent = ''
       if (accessError === 'not-allowed' || accessError === 'service-not-allowed') {
-        showMicPermissionHelp(true)
+        showMicPermissionHelp()
       }
       showToast(getVoiceErrorMessage(accessError), 'error')
       return
@@ -501,7 +467,7 @@ async function startRecording(): Promise<void> {
         setRecordingState(false)
         if (statusEl) statusEl.textContent = ''
         if (error === 'not-allowed' || error === 'service-not-allowed') {
-          showMicPermissionHelp(true)
+          showMicPermissionHelp()
         }
         showToast(getVoiceErrorMessage(error), 'error')
       },
