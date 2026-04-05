@@ -37,8 +37,6 @@ function formatTtl(expireAt: number): string {
   if (remaining <= 0) return '期限切れ'
   const totalMinutes = Math.ceil(remaining / 60000)
   const hours = Math.floor(totalMinutes / 60)
-  const days = Math.floor(hours / 24)
-  if (days > 0) return `${days}日`
   if (hours > 0) return `${hours}時間`
   return `${totalMinutes}分`
 }
