@@ -60,6 +60,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
+function isImeComposingEnter(event: KeyboardEvent): boolean {
+  if (event.key !== 'Enter') return false
+  return event.isComposing || event.keyCode === 229
+}
+
 function waitForAnimation(
   element: HTMLElement,
   animationName: string,
@@ -221,6 +226,7 @@ function startEditingTask(task: Task, textEl: HTMLElement): void {
   }
 
   input.addEventListener('keydown', (e) => {
+    if (isImeComposingEnter(e)) return
     if (e.key === 'Enter') { e.preventDefault(); commit() }
     if (e.key === 'Escape') { e.preventDefault(); cancel() }
   })
@@ -506,6 +512,7 @@ function setupTextInput(): void {
 
   // Enterキーで送信（Shift+Enterは改行）
   input.addEventListener('keydown', async (e) => {
+    if (isImeComposingEnter(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       const text = input.value
