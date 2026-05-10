@@ -1,11 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Echo-Todo icon">
-  <defs>
-    <linearGradient id="bg16" x1="20" y1="16" x2="108" y2="112" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#a78bfa" />
-      <stop offset="1" stop-color="#7c3aed" />
-    </linearGradient>
-  </defs>
-  <circle cx="64" cy="64" r="64" fill="url(#bg16)" />
+  <circle cx="64" cy="64" r="64" fill="#65558f" />
   <circle cx="44" cy="44" r="18" fill="#fff" />
   <path
     d="M24 98c0-18.778 16.118-32 36-32s36 13.222 36 32v6H24z"
@@ -13,9 +7,9 @@
   />
   <path
     d="M70 26h20c8.837 0 16 7.163 16 16v7.5c0 8.837-7.163 16-16 16H84l-9 10.5c-1.757 2.049-5 0.806-5-1.893V26z"
-    fill="#f9a8d4"
+    fill="#dbe6ff"
   />
-  <circle cx="82" cy="46" r="4" fill="#7c3aed" />
-  <circle cx="92" cy="46" r="4" fill="#7c3aed" />
-  <circle cx="102" cy="46" r="4" fill="#7c3aed" />
+  <circle cx="82" cy="46" r="4" fill="#4f4274" />
+  <circle cx="92" cy="46" r="4" fill="#4f4274" />
+  <circle cx="102" cy="46" r="4" fill="#4f4274" />
 </svg>

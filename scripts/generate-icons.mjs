@@ -12,11 +12,10 @@ const SIZES = [16, 48, 128]
 const SAMPLE_GRID = 6
 
 const COLORS = {
-  bgStart: hex('#a78bfa'),
-  bgEnd: hex('#7c3aed'),
+  bg: hex('#65558f'),
   white: hex('#ffffff'),
-  pink: hex('#f9a8d4'),
-  dot: hex('#7c3aed'),
+  bubble: hex('#dbe6ff'),
+  dot: hex('#4f4274'),
 }
 
 const CRC_TABLE = buildCrcTable()
@@ -67,14 +66,14 @@ function sampleScene(x, y) {
     return [0, 0, 0, 0]
   }
 
-  let color = gradientAt(x, y)
+  let color = COLORS.bg
 
   if (inPersonShape(x, y)) {
     color = COLORS.white
   }
 
   if (inBubbleShape(x, y)) {
-    color = COLORS.pink
+    color = COLORS.bubble
   }
 
   if (
@@ -110,22 +109,6 @@ function inBubbleShape(x, y) {
     || inTriangle(x, y, [84, 66], [75, 76], [76, 63.5])
   )
 }
-
-function gradientAt(x, y) {
-  const start = { x: 20, y: 16 }
-  const end = { x: 108, y: 112 }
-  const dx = end.x - start.x
-  const dy = end.y - start.y
-  const projection = ((x - start.x) * dx + (y - start.y) * dy) / (dx * dx + dy * dy)
-  const t = clamp(projection, 0, 1)
-
-  return [
-    lerp(COLORS.bgStart[0], COLORS.bgEnd[0], t),
-    lerp(COLORS.bgStart[1], COLORS.bgEnd[1], t),
-    lerp(COLORS.bgStart[2], COLORS.bgEnd[2], t),
-  ]
-}
-
 function inCircle(x, y, cx, cy, r) {
   const dx = x - cx
   const dy = y - cy
@@ -237,10 +220,6 @@ function hex(value) {
     Number.parseInt(value.slice(3, 5), 16),
     Number.parseInt(value.slice(5, 7), 16),
   ]
-}
-
-function lerp(start, end, t) {
-  return Math.round(start + (end - start) * t)
 }
 
 function clamp(value, min, max) {

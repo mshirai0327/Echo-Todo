@@ -6,6 +6,7 @@ import {
   getSettings,
   getStats,
   initDB,
+  saveTaskOrder,
   saveSettings,
   saveStats,
   type Task,
@@ -18,6 +19,20 @@ import { VoiceRecorder, type VoiceError } from '../voice/voice'
 
 const EXPIRED_TASK_INITIAL_DELAY_MS = 200
 const EXPIRED_TASK_STAGGER_MS = 300
+let draggedTaskId: string | null = null
+
+type IconName = 'add' | 'check' | 'drag-indicator' | 'mic' | 'stop'
+
+type CaretPointDocument = Document & {
+  caretPositionFromPoint?: (
+    x: number,
+    y: number,
+  ) => {
+    offsetNode: Node | null
+    offset: number
+  } | null
+  caretRangeFromPoint?: (x: number, y: number) => Range | null
+}
 
 function formatDuration(ms: number): string {
   if (ms <= 0) return '--'
@@ -102,6 +117,24 @@ function setTaskButtonsDisabled(element: HTMLElement, disabled: boolean): void {
   })
 }
 
+function createIcon(name: IconName, className = 'icon'): SVGSVGElement {
+  const svgNs = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(svgNs, 'svg')
+  svg.setAttribute('class', className)
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('aria-hidden', 'true')
+
+  const use = document.createElementNS(svgNs, 'use')
+  use.setAttribute('href', `#icon-${name}`)
+  svg.appendChild(use)
+
+  return svg
+}
+
+function setButtonIcon(button: HTMLButtonElement, name: IconName): void {
+  button.replaceChildren(createIcon(name))
+}
+
 function setTaskOverlayState(item: HTMLElement, message: string, accent = false): void {
   const overlayText = item.querySelector<HTMLElement>('.task-overlay-text')
   if (overlayText) overlayText.textContent = message
@@ -115,6 +148,57 @@ function resetTaskOverlayState(item: HTMLElement): void {
   if (overlayText) overlayText.textContent = ''
 
   item.classList.remove('overlay-visible', 'overlay-accent', 'shinki-itten')
+}
+
+function getTaskDropPosition(item: HTMLElement, clientY: number): 'before' | 'after' {
+  const bounds = item.getBoundingClientRect()
+  return clientY < bounds.top + bounds.height / 2 ? 'before' : 'after'
+}
+
+function clearTaskDropTargets(): void {
+  document.querySelectorAll<HTMLElement>('.task-item.drop-before, .task-item.drop-after').forEach((item) => {
+    item.classList.remove('drop-before', 'drop-after')
+  })
+}
+
+async function persistTaskOrderFromDom(): Promise<void> {
+  const list = document.getElementById('task-list')
+  if (!list) return
+
+  const orderedTaskIds = Array.from(list.querySelectorAll<HTMLElement>('.task-item[data-id]'))
+    .filter((item) => !item.classList.contains('task-expiring'))
+    .map((item) => item.dataset.id)
+    .filter((id): id is string => Boolean(id))
+
+  if (orderedTaskIds.length === 0) return
+  await saveTaskOrder(orderedTaskIds)
+}
+
+function getCaretOffsetFromPointer(
+  textEl: HTMLElement,
+  originalText: string,
+  event?: MouseEvent,
+): number {
+  if (!event) return originalText.length
+
+  const doc = document as CaretPointDocument
+  const maxOffset = originalText.length
+  const caretPosition = doc.caretPositionFromPoint?.(event.clientX, event.clientY)
+
+  if (caretPosition?.offsetNode && textEl.contains(caretPosition.offsetNode)) {
+    return Math.max(0, Math.min(caretPosition.offset, maxOffset))
+  }
+
+  const range = doc.caretRangeFromPoint?.(event.clientX, event.clientY)
+  if (range?.startContainer && textEl.contains(range.startContainer)) {
+    return Math.max(0, Math.min(range.startOffset, maxOffset))
+  }
+
+  return maxOffset
+}
+
+function compareTasksBySortOrder(a: Task, b: Task): number {
+  return a.sortOrder - b.sortOrder || b.createdAt - a.createdAt
 }
 
 function activateTab(tabId: 'main' | 'stats' | 'settings'): void {
@@ -139,11 +223,20 @@ function createTaskElement(task: Task): HTMLElement {
   item.dataset.id = task.id
   item.dataset.expireAt = String(task.expireAt)
 
+  const dragHandle = document.createElement('button')
+  dragHandle.type = 'button'
+  dragHandle.className = 'task-drag-handle'
+  dragHandle.title = 'ドラッグして並び替え'
+  dragHandle.setAttribute('aria-label', 'ドラッグして並び替え')
+  dragHandle.draggable = true
+  setButtonIcon(dragHandle, 'drag-indicator')
+
   const checkBtn = document.createElement('button')
   checkBtn.type = 'button'
   checkBtn.className = 'task-check-btn'
   checkBtn.title = '完了にする'
-  checkBtn.textContent = '✓'
+  checkBtn.setAttribute('aria-label', '完了にする')
+  setButtonIcon(checkBtn, 'check')
 
   const textEl = document.createElement('div')
   textEl.className = 'task-text'
@@ -160,16 +253,70 @@ function createTaskElement(task: Task): HTMLElement {
   overlayText.className = 'task-overlay-text'
   overlay.appendChild(overlayText)
 
-  item.append(checkBtn, textEl, ttlEl, overlay)
+  item.append(dragHandle, checkBtn, textEl, ttlEl, overlay)
 
   checkBtn.addEventListener('click', () => {
     if (item.classList.contains('task-busy')) return
     void handleCloseTask(task, item)
   })
 
-  textEl.addEventListener('click', () => {
+  textEl.addEventListener('click', (event) => {
     if (item.classList.contains('task-busy')) return
-    startEditingTask(task, textEl)
+    startEditingTask(task, textEl, event)
+  })
+
+  dragHandle.addEventListener('dragstart', (event) => {
+    if (item.classList.contains('task-busy') || item.classList.contains('task-expiring')) {
+      event.preventDefault()
+      return
+    }
+
+    draggedTaskId = task.id
+    item.classList.add('dragging')
+    event.dataTransfer?.setData('text/plain', task.id)
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+  })
+
+  dragHandle.addEventListener('dragend', () => {
+    draggedTaskId = null
+    item.classList.remove('dragging')
+    clearTaskDropTargets()
+  })
+
+  item.addEventListener('dragover', (event) => {
+    if (!draggedTaskId || draggedTaskId === task.id) return
+    if (item.classList.contains('task-busy') || item.classList.contains('task-expiring')) return
+
+    event.preventDefault()
+    clearTaskDropTargets()
+
+    const position = getTaskDropPosition(item, event.clientY)
+    item.classList.add(position === 'before' ? 'drop-before' : 'drop-after')
+  })
+
+  item.addEventListener('dragleave', (event) => {
+    const relatedTarget = event.relatedTarget as Node | null
+    if (relatedTarget && item.contains(relatedTarget)) return
+    item.classList.remove('drop-before', 'drop-after')
+  })
+
+  item.addEventListener('drop', (event) => {
+    const sourceTaskId = draggedTaskId ?? event.dataTransfer?.getData('text/plain')
+    if (!sourceTaskId || sourceTaskId === task.id) return
+
+    const list = document.getElementById('task-list')
+    const sourceItem = list?.querySelector<HTMLElement>(`.task-item[data-id="${sourceTaskId}"]`)
+    if (!list || !sourceItem) return
+
+    event.preventDefault()
+
+    const position = getTaskDropPosition(item, event.clientY)
+    const anchor = position === 'before' ? item : item.nextElementSibling
+    if (anchor === sourceItem) return
+
+    list.insertBefore(sourceItem, anchor)
+    clearTaskDropTargets()
+    void persistTaskOrderFromDom()
   })
 
   return item
@@ -197,10 +344,11 @@ async function startShinkiAutoDelete(task: Task, item: HTMLElement): Promise<voi
   }
 }
 
-function startEditingTask(task: Task, textEl: HTMLElement): void {
+function startEditingTask(task: Task, textEl: HTMLElement, event?: MouseEvent): void {
   if (textEl.querySelector('input')) return // すでに編集中
 
   const original = task.text
+  const caretOffset = getCaretOffsetFromPointer(textEl, original, event)
   const input = document.createElement('input')
   input.type = 'text'
   input.className = 'task-edit-input'
@@ -209,20 +357,44 @@ function startEditingTask(task: Task, textEl: HTMLElement): void {
   textEl.textContent = ''
   textEl.appendChild(input)
   input.focus()
-  input.select()
+  queueMicrotask(() => input.setSelectionRange(caretOffset, caretOffset))
+
+  let isFinished = false
+
+  const finish = (value: string) => {
+    if (isFinished) return
+    isFinished = true
+    textEl.textContent = value
+  }
 
   const commit = async () => {
+    if (isFinished) return
+
     const newText = input.value.trim()
-    if (newText && newText !== original) {
-      task.text = newText
-      await updateTask(task)
+    if (!newText) {
+      finish(original)
+      return
     }
-    textEl.textContent = task.text
+
+    if (newText !== original) {
+      try {
+        task.text = newText
+        await updateTask(task)
+      } catch (error) {
+        console.error('タスク更新エラー:', error)
+        task.text = original
+        finish(original)
+        showToast('タスクの更新に失敗しました', 'error')
+        return
+      }
+    }
+
+    finish(task.text)
   }
 
   const cancel = () => {
     task.text = original
-    textEl.textContent = original
+    finish(original)
   }
 
   input.addEventListener('keydown', (e) => {
@@ -245,7 +417,7 @@ async function handleCloseTask(task: Task, element: HTMLElement): Promise<void> 
     await closeTask(task)
     element.remove()
 
-    showToast('お疲れ様！✨', 'success')
+    showToast('タスクを完了しました', 'success')
 
     if (document.getElementById('tab-stats')?.classList.contains('active')) {
       await renderStats()
@@ -287,8 +459,8 @@ async function renderTasks(): Promise<void> {
   const existingItems = list.querySelectorAll('.task-item')
   existingItems.forEach((el) => el.remove())
 
-  activeTasks.sort((a, b) => b.createdAt - a.createdAt)
-  expiredTasks.sort((a, b) => b.createdAt - a.createdAt)
+  activeTasks.sort(compareTasksBySortOrder)
+  expiredTasks.sort(compareTasksBySortOrder)
 
   for (const task of activeTasks) {
     const el = createTaskElement(task)
@@ -345,27 +517,32 @@ async function addTasksFromText(text: string): Promise<void> {
     }
 
     const taskTexts = splitByRules(trimmed)
+    const normalizedTaskTexts = taskTexts.map((taskText) => taskText.trim()).filter(Boolean)
+    const existingTasks = await getAllTasks()
+    const nextGroupBaseSortOrder =
+      (existingTasks.length > 0 ? Math.min(...existingTasks.map((task) => task.sortOrder)) : 1000)
+      - normalizedTaskTexts.length
 
     const now = Date.now()
     const ttlMs = settings.ttlHours * 3600 * 1000
 
-    for (const taskText of taskTexts) {
-      if (!taskText.trim()) continue
+    for (const [index, taskText] of normalizedTaskTexts.entries()) {
       const task: Task = {
         id: crypto.randomUUID(),
-        text: taskText.trim(),
+        text: taskText,
         createdAt: now,
         expireAt: now + ttlMs,
+        sortOrder: nextGroupBaseSortOrder + index,
       }
       await addTask(task)
     }
 
     const stats = await getStats()
-    stats.totalCreated += taskTexts.filter((task) => task.trim()).length
+    stats.totalCreated += normalizedTaskTexts.length
     await saveStats(stats)
 
     await renderTasks()
-    showToast(`${taskTexts.length}件のタスクを追加しました 🌟`, 'success')
+    showToast(`${normalizedTaskTexts.length}件のタスクを追加しました`, 'success')
   } catch (e) {
     console.error('タスク追加エラー:', e)
     showToast('タスクの追加に失敗しました', 'error')
@@ -466,7 +643,7 @@ async function startRecording(): Promise<void> {
     }
 
     setRecordingState(true)
-    if (statusEl) statusEl.textContent = '🔴 録音中... 話しかけてください'
+    if (statusEl) statusEl.textContent = '録音中です。話しかけてください'
 
     voiceRecorder.start(
       async (text) => {
@@ -490,15 +667,19 @@ async function startRecording(): Promise<void> {
 
 function setRecordingState(recording: boolean): void {
   isRecording = recording
-  const micBtn = document.getElementById('mic-btn')
+  const micBtn = document.getElementById('mic-btn') as HTMLButtonElement | null
   if (!micBtn) return
 
   if (recording) {
     micBtn.classList.add('recording')
-    micBtn.textContent = '⏹️'
+    micBtn.title = '録音を停止'
+    micBtn.setAttribute('aria-label', '録音を停止')
+    setButtonIcon(micBtn, 'stop')
   } else {
     micBtn.classList.remove('recording')
-    micBtn.textContent = '🎤'
+    micBtn.title = '音声入力'
+    micBtn.setAttribute('aria-label', '音声入力')
+    setButtonIcon(micBtn, 'mic')
   }
 }
 
@@ -517,6 +698,7 @@ function setupTextInput(): void {
       e.preventDefault()
       const text = input.value
       input.value = ''
+      input.style.height = 'auto'
       await addTasksFromText(text)
     }
   })
@@ -524,6 +706,7 @@ function setupTextInput(): void {
   addBtn.addEventListener('click', async () => {
     const text = input.value
     input.value = ''
+    input.style.height = 'auto'
     await addTasksFromText(text)
   })
 
@@ -576,7 +759,7 @@ function setupSettings(): void {
       }
 
       await saveSettings({ ttlHours })
-      showToast('設定を保存しました 💾', 'success')
+      showToast('設定を保存しました', 'success')
     })
   }
 }
@@ -626,6 +809,7 @@ async function init(): Promise<void> {
   setupTextInput()
   setupVoiceInput()
   setupSettings()
+  setRecordingState(false)
 
   await renderTasks()
   startTtlUpdateTimer()
