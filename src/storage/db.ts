@@ -3,6 +3,7 @@ export interface Task {
   text: string
   createdAt: number
   expireAt: number
+  sortOrder: number
 }
 
 export interface Settings {
@@ -32,6 +33,17 @@ const defaultStats: Stats = {
 }
 
 let dbInstance: IDBDatabase | null = null
+
+type StoredTask = Omit<Task, 'sortOrder'> & {
+  sortOrder?: number
+}
+
+function normalizeTask(task: StoredTask): Task {
+  return {
+    ...task,
+    sortOrder: task.sortOrder ?? -task.createdAt,
+  }
+}
 
 type StoredSettings = {
   ttlHours?: number
@@ -83,7 +95,10 @@ export async function getAllTasks(): Promise<Task[]> {
     const tx = db.transaction('tasks', 'readonly')
     const store = tx.objectStore('tasks')
     const request = store.getAll()
-    request.onsuccess = () => resolve(request.result as Task[])
+    request.onsuccess = () => {
+      const tasks = (request.result as StoredTask[]).map(normalizeTask)
+      resolve(tasks)
+    }
     request.onerror = () => reject(request.error)
   })
 }
@@ -93,7 +108,7 @@ export async function addTask(task: Task): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('tasks', 'readwrite')
     const store = tx.objectStore('tasks')
-    const request = store.put(task)
+    const request = store.put(normalizeTask(task))
     request.onsuccess = () => resolve()
     request.onerror = () => reject(request.error)
   })
@@ -104,10 +119,21 @@ export async function updateTask(task: Task): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('tasks', 'readwrite')
     const store = tx.objectStore('tasks')
-    const request = store.put(task)
+    const request = store.put(normalizeTask(task))
     request.onsuccess = () => resolve()
     request.onerror = () => reject(request.error)
   })
+}
+
+export async function saveTaskOrder(taskIds: string[]): Promise<void> {
+  const tasksById = new Map((await getAllTasks()).map((task) => [task.id, task]))
+
+  for (const [index, id] of taskIds.entries()) {
+    const task = tasksById.get(id)
+    if (!task) continue
+    task.sortOrder = (index + 1) * 1000
+    await updateTask(task)
+  }
 }
 
 export async function deleteTask(id: string): Promise<void> {
